@@ -23,6 +23,7 @@
 namespace snow_shot::presentation {
 namespace {
 constexpr double kCropPi = 3.14159265358979323846;
+constexpr qreal kMaxCropExtent = 16384.0;
 
 int normalizeCropDegrees180(double degrees) {
     int wrapped = qRound(degrees) % 360;
@@ -31,42 +32,6 @@ int normalizeCropDegrees180(double degrees) {
     else if (wrapped < -180)
         wrapped += 360;
     return wrapped;
-}
-
-std::pair<QPointF, QPointF> cropAxesForDegrees(int degrees) {
-    const double rad = degrees * (kCropPi / 180.0);
-    const double c = std::cos(rad);
-    const double s = std::sin(rad);
-    return {QPointF(c, s), QPointF(-s, c)};
-}
-
-std::array<QPointF, 4> cropBoxCorners(const QPointF& center, const QSizeF& size, const QPointF& u,
-                                      const QPointF& v) {
-    const qreal hw = size.width() * 0.5;
-    const qreal hh = size.height() * 0.5;
-    return {
-        center - u * hw - v * hh,
-        center + u * hw - v * hh,
-        center + u * hw + v * hh,
-        center - u * hw + v * hh,
-    };
-}
-
-qreal cropMaxStepInsideImage(const std::array<QPointF, 4>& fromCorners,
-                             const std::array<QPointF, 4>& toCorners, qreal imgW, qreal imgH) {
-    qreal tMax = 1.0;
-    for (int i = 0; i < 4; ++i) {
-        const QPointF d = toCorners[i] - fromCorners[i];
-        if (d.x() < -1e-9 && toCorners[i].x() < 0.0)
-            tMax = std::min(tMax, std::max<qreal>(0.0, (0.0 - fromCorners[i].x()) / d.x()));
-        if (d.x() > 1e-9 && toCorners[i].x() > imgW)
-            tMax = std::min(tMax, std::max<qreal>(0.0, (imgW - fromCorners[i].x()) / d.x()));
-        if (d.y() < -1e-9 && toCorners[i].y() < 0.0)
-            tMax = std::min(tMax, std::max<qreal>(0.0, (0.0 - fromCorners[i].y()) / d.y()));
-        if (d.y() > 1e-9 && toCorners[i].y() > imgH)
-            tMax = std::min(tMax, std::max<qreal>(0.0, (imgH - fromCorners[i].y()) / d.y()));
-    }
-    return tMax;
 }
 
 QCursor cropRotateCursor() {
@@ -109,6 +74,7 @@ ImageEditingCanvas::ImageEditingCanvas(ImageEditingDocument& document, QWidget* 
     m_zoomReadout->setObjectName(QStringLiteral("imageEditingZoom"));
     m_zoomReadout->layoutIn(rect());
     connect(&document, &ImageEditingDocument::baseImageChanged, this, [this] { syncImage(); });
+    connect(&document, &ImageEditingDocument::previewImageChanged, this, [this] { update(); });
 }
 ImageEditingCanvas::~ImageEditingCanvas() {
     setCustomRenderer(nullptr);
@@ -122,9 +88,12 @@ void ImageEditingCanvas::setMode(Mode mode) {
     m_mode = mode;
     setInteractionEnabled(mode == Mode::Draw);
     if (mode == Mode::CropRect) {
+        // Allow rotated source pixels and extended crop regions outside original bounds.
+        setContentClip(std::nullopt);
         initializeCropRect(m_cropAspectRatio);
         setCursor(Qt::ArrowCursor);
     } else {
+        setContentClip(m_document.bounds());
         m_cropRect = {};
         setCursor(mode == Mode::Pan ? Qt::OpenHandCursor : Qt::CrossCursor);
     }
@@ -146,9 +115,15 @@ void ImageEditingCanvas::setCropAngleDegrees(int degrees) {
     if (clamped == m_cropAngleDeg && m_cropRect.isValid())
         return;
     m_cropAngleDeg = clamped;
-    applyCropAngleConstraints();
     notifyCropRectChanged();
     update();
+}
+void ImageEditingCanvas::setCropExtensionFillColor(QColor color) {
+    if (m_cropExtensionFillColor == color)
+        return;
+    m_cropExtensionFillColor = color;
+    if (m_mode == Mode::CropRect)
+        update();
 }
 void ImageEditingCanvas::resetCropRect() {
     if (m_mode == Mode::CropRect) {
@@ -158,20 +133,11 @@ void ImageEditingCanvas::resetCropRect() {
     }
 }
 QRect ImageEditingCanvas::cropPixelRect() const {
-    const QSize size = m_document.image().size();
-    if (size.isEmpty() || !m_cropRect.isValid())
+    if (m_document.image().isNull() || !m_cropRect.isValid())
         return {};
-    if (m_cropAngleDeg == 0) {
-        const int left = std::clamp(qRound(m_cropRect.left()), 0, size.width() - 1);
-        const int top = std::clamp(qRound(m_cropRect.top()), 0, size.height() - 1);
-        const int right = std::clamp(qRound(m_cropRect.right()), left + 1, size.width());
-        const int bottom = std::clamp(qRound(m_cropRect.bottom()), top + 1, size.height());
-        return QRect(left, top, right - left, bottom - top);
-    }
-    const int w = std::max(1, qRound(m_cropRect.width()));
-    const int h = std::max(1, qRound(m_cropRect.height()));
-    return QRect(qRound(m_cropRect.center().x() - w * 0.5),
-                 qRound(m_cropRect.center().y() - h * 0.5), w, h);
+    const int w = std::clamp(qRound(m_cropRect.width()), 1, static_cast<int>(kMaxCropExtent));
+    const int h = std::clamp(qRound(m_cropRect.height()), 1, static_cast<int>(kMaxCropExtent));
+    return QRect(qRound(m_cropRect.left()), qRound(m_cropRect.top()), w, h);
 }
 bool ImageEditingCanvas::commitCrop() {
     if (m_mode != Mode::CropRect)
@@ -192,7 +158,8 @@ void ImageEditingCanvas::cancelCropRect() {
 }
 void ImageEditingCanvas::syncImage() {
     m_zoomReadout->dismiss();
-    setContentClip(m_document.bounds());
+    setContentClip(m_mode == Mode::CropRect ? std::nullopt
+                                            : std::optional<QRectF>(m_document.bounds()));
     setDecorationRenderAreas({m_document.bounds(), m_document.bounds()});
     setBaseImageSources(baseImageSources());
     if (m_mode == Mode::CropRect)
@@ -262,22 +229,21 @@ QRectF ImageEditingCanvas::cropCanvasRect(const QRectF& pixelRect) const {
                   pixelRect.width() * scaleX, pixelRect.height() * scaleY);
 }
 std::pair<QPointF, QPointF> ImageEditingCanvas::cropPixelAxes() const {
-    return cropAxesForDegrees(m_cropAngleDeg);
+    return {QPointF(1.0, 0.0), QPointF(0.0, 1.0)};
 }
 std::array<QPointF, 4> ImageEditingCanvas::cropViewCorners() const {
     const QSize imgSize = m_document.image().size();
     const QRectF bounds = m_document.bounds();
     if (m_mode != Mode::CropRect || !m_cropRect.isValid() || imgSize.isEmpty() || bounds.isEmpty())
         return {};
-    const auto [u, v] = cropPixelAxes();
-    const auto pxCorners = cropBoxCorners(m_cropRect.center(), m_cropRect.size(), u, v);
     const qreal sx = bounds.width() / imgSize.width();
     const qreal sy = bounds.height() / imgSize.height();
     const QTransform xform = canvasToViewTransform();
     const auto toView = [&](const QPointF& px) {
         return xform.map(QPointF(bounds.x() + px.x() * sx, bounds.y() + px.y() * sy));
     };
-    return {toView(pxCorners[0]), toView(pxCorners[1]), toView(pxCorners[2]), toView(pxCorners[3])};
+    return {toView(m_cropRect.topLeft()), toView(m_cropRect.topRight()),
+            toView(m_cropRect.bottomRight()), toView(m_cropRect.bottomLeft())};
 }
 QRectF ImageEditingCanvas::cropViewRect() const {
     if (m_mode != Mode::CropRect || !m_cropRect.isValid())
@@ -358,31 +324,19 @@ ImageEditingCanvas::CropHandle ImageEditingCanvas::cropHandleAt(const QPointF& v
     return CropHandle::Create;
 }
 QCursor ImageEditingCanvas::cropCursorForHandle(CropHandle handle, bool dragging) const {
-    const auto rotatedResizeCursor = [&](int baseDeg) {
-        int deg = (baseDeg + m_cropAngleDeg) % 180;
-        if (deg < 0)
-            deg += 180;
-        if (deg < 23 || deg >= 158)
-            return Qt::SizeHorCursor;
-        if (deg < 68)
-            return Qt::SizeFDiagCursor;
-        if (deg < 113)
-            return Qt::SizeVerCursor;
-        return Qt::SizeBDiagCursor;
-    };
     switch (handle) {
     case CropHandle::TopLeft:
     case CropHandle::BottomRight:
-        return rotatedResizeCursor(45);
+        return Qt::SizeFDiagCursor;
     case CropHandle::TopRight:
     case CropHandle::BottomLeft:
-        return rotatedResizeCursor(135);
+        return Qt::SizeBDiagCursor;
     case CropHandle::Top:
     case CropHandle::Bottom:
-        return rotatedResizeCursor(90);
+        return Qt::SizeVerCursor;
     case CropHandle::Left:
     case CropHandle::Right:
-        return rotatedResizeCursor(0);
+        return Qt::SizeHorCursor;
     case CropHandle::Rotate:
         return cropRotateCursor();
     case CropHandle::Move:
@@ -393,38 +347,6 @@ QCursor ImageEditingCanvas::cropCursorForHandle(CropHandle handle, bool dragging
         return Qt::ArrowCursor;
     }
     return Qt::ArrowCursor;
-}
-void ImageEditingCanvas::applyCropAngleConstraints() {
-    const QSize imgSize = m_document.image().size();
-    if (imgSize.isEmpty()) {
-        m_cropRect = {};
-        return;
-    }
-    const qreal imgW = imgSize.width();
-    const qreal imgH = imgSize.height();
-    QSizeF target = (m_cropBaseSize.isValid() && !m_cropBaseSize.isEmpty()) ? m_cropBaseSize
-                                                                            : m_cropRect.size();
-    if (!target.isValid() || target.isEmpty())
-        target = QSizeF(imgW, imgH);
-    const double rad = m_cropAngleDeg * (kCropPi / 180.0);
-    const double ca = std::abs(std::cos(rad));
-    const double sa = std::abs(std::sin(rad));
-    const double reachX0 = (target.width() * 0.5) * ca + (target.height() * 0.5) * sa;
-    const double reachY0 = (target.width() * 0.5) * sa + (target.height() * 0.5) * ca;
-    double scale = 1.0;
-    if (reachX0 > 1e-6)
-        scale = std::min(scale, (imgW * 0.5) / reachX0);
-    if (reachY0 > 1e-6)
-        scale = std::min(scale, (imgH * 0.5) / reachY0);
-    const qreal w = std::clamp(target.width() * scale, 1.0, imgW);
-    const qreal h = std::clamp(target.height() * scale, 1.0, imgH);
-    const double reachX = std::min<double>(imgW * 0.5, (w * 0.5) * ca + (h * 0.5) * sa);
-    const double reachY = std::min<double>(imgH * 0.5, (w * 0.5) * sa + (h * 0.5) * ca);
-    const QPointF curCenter =
-        m_cropRect.isValid() ? m_cropRect.center() : QPointF(imgW * 0.5, imgH * 0.5);
-    const qreal cx = std::clamp(curCenter.x(), reachX, std::max(reachX, imgW - reachX));
-    const qreal cy = std::clamp(curCenter.y(), reachY, std::max(reachY, imgH - reachY));
-    m_cropRect = QRectF(cx - w * 0.5, cy - h * 0.5, w, h);
 }
 void ImageEditingCanvas::initializeCropRect(std::optional<double> ratio) {
     const QSize imgSize = m_document.image().size();
@@ -446,13 +368,11 @@ void ImageEditingCanvas::initializeCropRect(std::optional<double> ratio) {
             ch = h;
             cw = ch * r;
         }
-        cw = std::clamp(cw, 1.0, w);
-        ch = std::clamp(ch, 1.0, h);
+        cw = std::clamp(cw, 1.0, kMaxCropExtent);
+        ch = std::clamp(ch, 1.0, kMaxCropExtent);
         m_cropRect = QRectF((w - cw) * 0.5, (h - ch) * 0.5, cw, ch);
     }
     m_cropBaseSize = m_cropRect.size();
-    if (m_cropAngleDeg != 0)
-        applyCropAngleConstraints();
     notifyCropRectChanged();
 }
 void ImageEditingCanvas::notifyCropRectChanged() {
@@ -494,29 +414,34 @@ void ImageEditingCanvas::updateCropDrag(const QPointF& pixelPos, Qt::KeyboardMod
     }
 
     QRectF next = m_cropRect;
+    const qreal minCoordX = -kMaxCropExtent;
+    const qreal maxCoordX = imgW + kMaxCropExtent;
+    const qreal minCoordY = -kMaxCropExtent;
+    const qreal maxCoordY = imgH + kMaxCropExtent;
     if (m_cropDragHandle == CropHandle::Move) {
-        const double rad = m_cropAngleDeg * (kCropPi / 180.0);
-        const double reachX = (m_cropDragStartRect.width() * 0.5) * std::abs(std::cos(rad)) +
-                              (m_cropDragStartRect.height() * 0.5) * std::abs(std::sin(rad));
-        const double reachY = (m_cropDragStartRect.width() * 0.5) * std::abs(std::sin(rad)) +
-                              (m_cropDragStartRect.height() * 0.5) * std::abs(std::cos(rad));
-        const qreal cx = std::clamp(m_cropDragStartRect.center().x() + delta.x(), reachX,
-                                    std::max(reachX, imgW - reachX));
-        const qreal cy = std::clamp(m_cropDragStartRect.center().y() + delta.y(), reachY,
-                                    std::max(reachY, imgH - reachY));
-        next =
-            QRectF(cx - m_cropDragStartRect.width() * 0.5, cy - m_cropDragStartRect.height() * 0.5,
-                   m_cropDragStartRect.width(), m_cropDragStartRect.height());
+        const qreal w = m_cropDragStartRect.width();
+        const qreal h = m_cropDragStartRect.height();
+        const qreal minCx = minCoordX + w * 0.5;
+        const qreal maxCx = maxCoordX - w * 0.5;
+        const qreal minCy = minCoordY + h * 0.5;
+        const qreal maxCy = maxCoordY - h * 0.5;
+        const qreal cx =
+            std::clamp(m_cropDragStartRect.center().x() + delta.x(), minCx, std::max(minCx, maxCx));
+        const qreal cy =
+            std::clamp(m_cropDragStartRect.center().y() + delta.y(), minCy, std::max(minCy, maxCy));
+        next = QRectF(cx - w * 0.5, cy - h * 0.5, w, h);
     } else if (m_cropDragHandle == CropHandle::Create) {
-        m_cropAngleDeg = 0;
-        const QPointF anchor(std::clamp(m_cropDragStartPixel.x(), 0.0, imgW),
-                             std::clamp(m_cropDragStartPixel.y(), 0.0, imgH));
-        const QPointF cur(std::clamp(pixelPos.x(), 0.0, imgW), std::clamp(pixelPos.y(), 0.0, imgH));
+        const QPointF anchor(std::clamp(m_cropDragStartPixel.x(), minCoordX, maxCoordX),
+                             std::clamp(m_cropDragStartPixel.y(), minCoordY, maxCoordY));
+        const QPointF cur(std::clamp(pixelPos.x(), minCoordX, maxCoordX),
+                          std::clamp(pixelPos.y(), minCoordY, maxCoordY));
         if (std::hypot(cur.x() - anchor.x(), cur.y() - anchor.y()) < 2.0)
             return;
         if (altCenter) {
-            const qreal maxHalfW = std::min(anchor.x(), imgW - anchor.x());
-            const qreal maxHalfH = std::min(anchor.y(), imgH - anchor.y());
+            const qreal maxHalfW =
+                std::min({anchor.x() - minCoordX, maxCoordX - anchor.x(), kMaxCropExtent * 0.5});
+            const qreal maxHalfH =
+                std::min({anchor.y() - minCoordY, maxCoordY - anchor.y(), kMaxCropExtent * 0.5});
             qreal halfW = std::clamp(std::abs(cur.x() - anchor.x()), 0.5, maxHalfW);
             qreal halfH = std::clamp(std::abs(cur.y() - anchor.y()), 0.5, maxHalfH);
             if (activeRatio && *activeRatio > 0.0) {
@@ -529,8 +454,10 @@ void ImageEditingCanvas::updateCropDrag(const QPointF& pixelPos, Qt::KeyboardMod
         } else {
             const qreal sx = cur.x() >= anchor.x() ? 1.0 : -1.0;
             const qreal sy = cur.y() >= anchor.y() ? 1.0 : -1.0;
-            const qreal maxW = sx > 0 ? imgW - anchor.x() : anchor.x();
-            const qreal maxH = sy > 0 ? imgH - anchor.y() : anchor.y();
+            const qreal maxW =
+                std::min(sx > 0 ? maxCoordX - anchor.x() : anchor.x() - minCoordX, kMaxCropExtent);
+            const qreal maxH =
+                std::min(sy > 0 ? maxCoordY - anchor.y() : anchor.y() - minCoordY, kMaxCropExtent);
             qreal w = std::clamp(std::abs(cur.x() - anchor.x()), 1.0, std::max(1.0, maxW));
             qreal h = std::clamp(std::abs(cur.y() - anchor.y()), 1.0, std::max(1.0, maxH));
             if (activeRatio && *activeRatio > 0.0) {
@@ -543,84 +470,7 @@ void ImageEditingCanvas::updateCropDrag(const QPointF& pixelPos, Qt::KeyboardMod
             }
             const qreal x0 = sx > 0 ? anchor.x() : anchor.x() - w;
             const qreal y0 = sy > 0 ? anchor.y() : anchor.y() - h;
-            next = QRectF(std::clamp(x0, 0.0, imgW - 1.0), std::clamp(y0, 0.0, imgH - 1.0),
-                          std::min(w, imgW), std::min(h, imgH));
-        }
-    } else if (m_cropAngleDeg != 0) {
-        const auto [u, v] = cropPixelAxes();
-        const qreal localDx = QPointF::dotProduct(delta, u);
-        const qreal localDy = QPointF::dotProduct(delta, v);
-        const bool hasLeft = m_cropDragHandle == CropHandle::TopLeft ||
-                             m_cropDragHandle == CropHandle::Left ||
-                             m_cropDragHandle == CropHandle::BottomLeft;
-        const bool hasRight = m_cropDragHandle == CropHandle::TopRight ||
-                              m_cropDragHandle == CropHandle::Right ||
-                              m_cropDragHandle == CropHandle::BottomRight;
-        const bool hasTop = m_cropDragHandle == CropHandle::TopLeft ||
-                            m_cropDragHandle == CropHandle::Top ||
-                            m_cropDragHandle == CropHandle::TopRight;
-        const bool hasBottom = m_cropDragHandle == CropHandle::BottomLeft ||
-                               m_cropDragHandle == CropHandle::Bottom ||
-                               m_cropDragHandle == CropHandle::BottomRight;
-        const qreal startW = m_cropDragStartRect.width();
-        const qreal startH = m_cropDragStartRect.height();
-        const QPointF startC = m_cropDragStartRect.center();
-        const auto commitAxis = [&](const QPointF& curC, const QSizeF& curSz, const QPointF& candC,
-                                    const QSizeF& candSz) {
-            const qreal t = cropMaxStepInsideImage(cropBoxCorners(curC, curSz, u, v),
-                                                   cropBoxCorners(candC, candSz, u, v), imgW, imgH);
-            const QPointF c = curC + (candC - curC) * t;
-            const QSizeF sz(curSz.width() + (candSz.width() - curSz.width()) * t,
-                            curSz.height() + (candSz.height() - curSz.height()) * t);
-            return std::pair{c, sz};
-        };
-        if (!activeRatio || *activeRatio <= 0.0) {
-            QPointF curC = startC;
-            QSizeF curSz = m_cropDragStartRect.size();
-            if (hasLeft || hasRight) {
-                const qreal sx = hasLeft ? -1.0 : 1.0;
-                const qreal candW =
-                    std::max<qreal>(1.0, startW + (altCenter ? 2.0 : 1.0) * sx * localDx);
-                const qreal dW = candW - curSz.width();
-                const QPointF candC = altCenter ? curC : curC + u * (sx * 0.5 * dW);
-                std::tie(curC, curSz) =
-                    commitAxis(curC, curSz, candC, QSizeF(candW, curSz.height()));
-            }
-            if (hasTop || hasBottom) {
-                const qreal sy = hasTop ? -1.0 : 1.0;
-                const qreal candH =
-                    std::max<qreal>(1.0, startH + (altCenter ? 2.0 : 1.0) * sy * localDy);
-                const qreal dH = candH - curSz.height();
-                const QPointF candC = altCenter ? curC : curC + v * (sy * 0.5 * dH);
-                std::tie(curC, curSz) =
-                    commitAxis(curC, curSz, candC, QSizeF(curSz.width(), candH));
-            }
-            next = QRectF(curC.x() - curSz.width() * 0.5, curC.y() - curSz.height() * 0.5,
-                          curSz.width(), curSz.height());
-        } else {
-            const qreal r = *activeRatio;
-            qreal candW = startW;
-            if ((hasLeft || hasRight) && (hasTop || hasBottom)) {
-                const qreal dx = (hasLeft ? -localDx : localDx) * (altCenter ? 2.0 : 1.0);
-                const qreal dy = (hasTop ? -localDy : localDy) * (altCenter ? 2.0 : 1.0);
-                candW = std::max({1.0, r, startW + dx, (startH + dy) * r});
-            } else if (hasLeft || hasRight) {
-                const qreal dx = (hasLeft ? -localDx : localDx) * (altCenter ? 2.0 : 1.0);
-                candW = std::max({1.0, r, startW + dx});
-            } else if (hasTop || hasBottom) {
-                const qreal dy = (hasTop ? -localDy : localDy) * (altCenter ? 2.0 : 1.0);
-                candW = std::max({1.0, r, (startH + dy) * r});
-            }
-            const qreal candH = candW / r;
-            const qreal ax = hasLeft ? -1.0 : (hasRight ? 1.0 : 0.0);
-            const qreal ay = hasTop ? -1.0 : (hasBottom ? 1.0 : 0.0);
-            const QPointF candC = altCenter ? startC
-                                            : startC + u * (ax * 0.5 * (candW - startW)) +
-                                                  v * (ay * 0.5 * (candH - startH));
-            const auto [c, sz] =
-                commitAxis(startC, QSizeF(startW, startH), candC, QSizeF(candW, candH));
-            next = QRectF(c.x() - sz.width() * 0.5, c.y() - sz.height() * 0.5, sz.width(),
-                          sz.height());
+            next = QRectF(x0, y0, w, h);
         }
     } else if (!activeRatio || *activeRatio <= 0.0) {
         const bool hasLeft = m_cropDragHandle == CropHandle::TopLeft ||
@@ -647,8 +497,10 @@ void ImageEditingCanvas::updateCropDrag(const QPointF& pixelPos, Qt::KeyboardMod
                 halfH -= delta.y();
             else if (hasBottom)
                 halfH += delta.y();
-            const qreal maxHalfW = std::min(c.x(), imgW - c.x());
-            const qreal maxHalfH = std::min(c.y(), imgH - c.y());
+            const qreal maxHalfW =
+                std::min({c.x() - minCoordX, maxCoordX - c.x(), kMaxCropExtent * 0.5});
+            const qreal maxHalfH =
+                std::min({c.y() - minCoordY, maxCoordY - c.y(), kMaxCropExtent * 0.5});
             halfW = std::clamp(halfW, 0.5, std::max(0.5, maxHalfW));
             halfH = std::clamp(halfH, 0.5, std::max(0.5, maxHalfH));
             next = QRectF(c.x() - halfW, c.y() - halfH, halfW * 2.0, halfH * 2.0);
@@ -658,13 +510,13 @@ void ImageEditingCanvas::updateCropDrag(const QPointF& pixelPos, Qt::KeyboardMod
             qreal r = m_cropDragStartRect.right();
             qreal b = m_cropDragStartRect.bottom();
             if (hasLeft)
-                l = std::clamp(l + delta.x(), 0.0, r - 1.0);
+                l = std::clamp(l + delta.x(), std::max(minCoordX, r - kMaxCropExtent), r - 1.0);
             if (hasRight)
-                r = std::clamp(r + delta.x(), l + 1.0, imgW);
+                r = std::clamp(r + delta.x(), l + 1.0, std::min(maxCoordX, l + kMaxCropExtent));
             if (hasTop)
-                t = std::clamp(t + delta.y(), 0.0, b - 1.0);
+                t = std::clamp(t + delta.y(), std::max(minCoordY, b - kMaxCropExtent), b - 1.0);
             if (hasBottom)
-                b = std::clamp(b + delta.y(), t + 1.0, imgH);
+                b = std::clamp(b + delta.y(), t + 1.0, std::min(maxCoordY, t + kMaxCropExtent));
             next = QRectF(l, t, r - l, b - t);
         }
     } else {
@@ -680,8 +532,10 @@ void ImageEditingCanvas::updateCropDrag(const QPointF& pixelPos, Qt::KeyboardMod
             if (altCenter) {
                 const qreal dx = fromLeft ? -delta.x() : delta.x();
                 const qreal dy = fromTop ? -delta.y() : delta.y();
-                const qreal maxHalfW = std::min(c.x(), imgW - c.x());
-                const qreal maxHalfH = std::min(c.y(), imgH - c.y());
+                const qreal maxHalfW =
+                    std::min({c.x() - minCoordX, maxCoordX - c.x(), kMaxCropExtent * 0.5});
+                const qreal maxHalfH =
+                    std::min({c.y() - minCoordY, maxCoordY - c.y(), kMaxCropExtent * 0.5});
                 const qreal limHalfW = std::min(maxHalfW, maxHalfH * r);
                 const qreal minHalfW = std::min(limHalfW, std::max(0.5, 0.5 * r));
                 const qreal candW = m_cropDragStartRect.width() * 0.5 + dx;
@@ -693,8 +547,10 @@ void ImageEditingCanvas::updateCropDrag(const QPointF& pixelPos, Qt::KeyboardMod
                 const qreal ax =
                     fromLeft ? m_cropDragStartRect.right() : m_cropDragStartRect.left();
                 const qreal ay = fromTop ? m_cropDragStartRect.bottom() : m_cropDragStartRect.top();
-                const qreal maxW = fromLeft ? ax : (imgW - ax);
-                const qreal maxH = fromTop ? ay : (imgH - ay);
+                const qreal maxW =
+                    std::min(fromLeft ? ax - minCoordX : maxCoordX - ax, kMaxCropExtent);
+                const qreal maxH =
+                    std::min(fromTop ? ay - minCoordY : maxCoordY - ay, kMaxCropExtent);
                 const qreal limW = std::min(maxW, maxH * r);
                 const qreal minW = std::min(limW, std::max(1.0, r));
                 const qreal candW =
@@ -707,45 +563,51 @@ void ImageEditingCanvas::updateCropDrag(const QPointF& pixelPos, Qt::KeyboardMod
             }
         } else if (m_cropDragHandle == CropHandle::Left || m_cropDragHandle == CropHandle::Right) {
             const bool fromLeft = m_cropDragHandle == CropHandle::Left;
+            const qreal maxHLimit = std::min(maxCoordY - minCoordY, kMaxCropExtent);
             if (altCenter) {
-                const qreal maxW = std::min({2.0 * c.x(), 2.0 * (imgW - c.x()), imgH * r});
+                const qreal maxW = std::min({2.0 * (c.x() - minCoordX), 2.0 * (maxCoordX - c.x()),
+                                             kMaxCropExtent, maxHLimit * r});
                 const qreal minW = std::min(maxW, std::max(1.0, r));
                 const qreal w = std::clamp(m_cropDragStartRect.width() +
                                                2.0 * (fromLeft ? -delta.x() : delta.x()),
                                            minW, maxW);
                 const qreal h = w / r;
-                const qreal y = std::clamp(c.y() - h * 0.5, 0.0, imgH - h);
+                const qreal y = std::clamp(c.y() - h * 0.5, minCoordY, maxCoordY - h);
                 next = QRectF(c.x() - w * 0.5, y, w, h);
             } else {
                 const qreal ax =
                     fromLeft ? m_cropDragStartRect.right() : m_cropDragStartRect.left();
-                const qreal maxW = std::min(fromLeft ? ax : (imgW - ax), imgH * r);
+                const qreal maxW = std::min(
+                    {fromLeft ? ax - minCoordX : maxCoordX - ax, kMaxCropExtent, maxHLimit * r});
                 const qreal minW = std::min(maxW, std::max(1.0, r));
                 const qreal w = std::clamp(
                     m_cropDragStartRect.width() + (fromLeft ? -delta.x() : delta.x()), minW, maxW);
                 const qreal h = w / r;
-                const qreal y = std::clamp(c.y() - h * 0.5, 0.0, imgH - h);
+                const qreal y = std::clamp(c.y() - h * 0.5, minCoordY, maxCoordY - h);
                 next = QRectF(fromLeft ? ax - w : ax, y, w, h);
             }
         } else {
             const bool fromTop = m_cropDragHandle == CropHandle::Top;
+            const qreal maxWLimit = std::min(maxCoordX - minCoordX, kMaxCropExtent);
             if (altCenter) {
-                const qreal maxH = std::min({2.0 * c.y(), 2.0 * (imgH - c.y()), imgW / r});
+                const qreal maxH = std::min({2.0 * (c.y() - minCoordY), 2.0 * (maxCoordY - c.y()),
+                                             kMaxCropExtent, maxWLimit / r});
                 const qreal minH = std::min(maxH, std::max(1.0, 1.0 / r));
                 const qreal h = std::clamp(m_cropDragStartRect.height() +
                                                2.0 * (fromTop ? -delta.y() : delta.y()),
                                            minH, maxH);
                 const qreal w = h * r;
-                const qreal x = std::clamp(c.x() - w * 0.5, 0.0, imgW - w);
+                const qreal x = std::clamp(c.x() - w * 0.5, minCoordX, maxCoordX - w);
                 next = QRectF(x, c.y() - h * 0.5, w, h);
             } else {
                 const qreal ay = fromTop ? m_cropDragStartRect.bottom() : m_cropDragStartRect.top();
-                const qreal maxH = std::min(fromTop ? ay : (imgH - ay), imgW / r);
+                const qreal maxH = std::min(
+                    {fromTop ? ay - minCoordY : maxCoordY - ay, kMaxCropExtent, maxWLimit / r});
                 const qreal minH = std::min(maxH, std::max(1.0, 1.0 / r));
                 const qreal h = std::clamp(
                     m_cropDragStartRect.height() + (fromTop ? -delta.y() : delta.y()), minH, maxH);
                 const qreal w = h * r;
-                const qreal x = std::clamp(c.x() - w * 0.5, 0.0, imgW - w);
+                const qreal x = std::clamp(c.x() - w * 0.5, minCoordX, maxCoordX - w);
                 next = QRectF(x, fromTop ? ay - h : ay, w, h);
             }
         }
@@ -799,6 +661,8 @@ void ImageEditingCanvas::mousePressEvent(QMouseEvent* event) {
         update(QRegion(previous) | cropPreviewDamage());
         return;
     }
+    if (m_mode == Mode::Draw && event->button() == Qt::LeftButton)
+        m_document.setCanvasGestureActive(true);
     SnowCanvasWidget::mousePressEvent(event);
 }
 void ImageEditingCanvas::mouseMoveEvent(QMouseEvent* event) {
@@ -870,6 +734,8 @@ void ImageEditingCanvas::mouseReleaseEvent(QMouseEvent* event) {
         return;
     }
     SnowCanvasWidget::mouseReleaseEvent(event);
+    if (event->button() == Qt::LeftButton && !hasActiveTextEditing())
+        m_document.setCanvasGestureActive(false);
 }
 void ImageEditingCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
     if (m_mode == Mode::CropRect && event->button() == Qt::LeftButton) {
@@ -955,7 +821,7 @@ void ImageEditingCanvas::resizeEvent(QResizeEvent* event) {
         syncCamera();
 }
 std::uint64_t ImageEditingCanvas::contentRevision() const {
-    return static_cast<std::uint64_t>(m_document.image().cacheKey());
+    return static_cast<std::uint64_t>(m_document.displayImage().cacheKey());
 }
 QList<SnowCanvasBaseImageSource> ImageEditingCanvas::baseImageSources() const {
     return m_document.baseImageSources();
@@ -964,7 +830,7 @@ std::optional<SnowCanvasFilterRenderReference> ImageEditingCanvas::filterRenderR
     if (m_document.bounds().isEmpty())
         return {};
     return SnowCanvasFilterRenderReference{
-        m_document.bounds(), m_document.image().width() / m_document.bounds().width(),
+        m_document.bounds(), m_document.displayImage().width() / m_document.bounds().width(),
         SnowCanvasFilterRenderReference::Presentation::Composite};
 }
 void ImageEditingCanvas::renderBeforeCanvas(QPainter& painter,
@@ -993,7 +859,24 @@ void ImageEditingCanvas::renderOriginalBackground(QPainter& painter,
     // Compose the image projection with that view-to-tile transform to sample the same pixels.
     painter.setTransform(context.canvasToViewTransform, true);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    painter.drawImage(m_document.bounds(), m_document.image());
+    const QImage& display = m_document.displayImage();
+    const QRectF bounds = m_document.bounds();
+    if (m_mode == Mode::CropRect && context.purpose == SnowCanvasRenderContext::Purpose::Widget) {
+        if (!m_cropRect.isEmpty() && m_cropExtensionFillColor.alpha() > 0) {
+            const QRectF fillArea = cropCanvasRect(m_cropRect);
+            if (fillArea.isValid() && !fillArea.isEmpty())
+                painter.fillRect(fillArea, m_cropExtensionFillColor);
+        }
+        if (m_cropAngleDeg != 0 && !bounds.isEmpty()) {
+            const QPointF center = bounds.center();
+            painter.translate(center);
+            painter.rotate(static_cast<qreal>(m_cropAngleDeg));
+            painter.translate(-center);
+        }
+        painter.drawImage(bounds, display);
+        return;
+    }
+    painter.drawImage(bounds, display);
 }
 QRectF ImageEditingCanvas::cropStrip(int* pixelCount) const {
     if ((m_mode != Mode::CropRows && m_mode != Mode::CropColumns) || m_panning)
@@ -1039,18 +922,11 @@ void ImageEditingCanvas::renderAfterCanvas(QPainter& painter,
         const QSize imgSize = m_document.image().size();
         const QRectF bounds = m_document.bounds();
         if (!imgSize.isEmpty() && !bounds.isEmpty()) {
-            const auto [u, v] = cropPixelAxes();
-            const auto pxCorners = cropBoxCorners(m_cropRect.center(), m_cropRect.size(), u, v);
-            const qreal sx = bounds.width() / imgSize.width();
-            const qreal sy = bounds.height() / imgSize.height();
-            const auto toView = [&](const QPointF& px) {
-                return context.canvasToViewTransform.map(
-                    QPointF(bounds.x() + px.x() * sx, bounds.y() + px.y() * sy));
-            };
-            const QPointF tl = toView(pxCorners[0]);
-            const QPointF tr = toView(pxCorners[1]);
-            const QPointF br = toView(pxCorners[2]);
-            const QPointF bl = toView(pxCorners[3]);
+            const auto corners = cropViewCorners();
+            const QPointF& tl = corners[0];
+            const QPointF& tr = corners[1];
+            const QPointF& br = corners[2];
+            const QPointF& bl = corners[3];
             QPolygonF poly;
             poly << tl << tr << br << bl;
             const qreal viewW = std::hypot(tr.x() - tl.x(), tr.y() - tl.y());
@@ -1059,15 +935,15 @@ void ImageEditingCanvas::renderAfterCanvas(QPainter& painter,
                 const QPointF uV = (tr - tl) / viewW;
                 const QPointF vV = (bl - tl) / viewH;
                 painter.save();
-                // Photoshop-style outer dark scrim outside active crop box (supports rotation).
+                // Photoshop-style outer dark scrim outside active crop box.
                 QPainterPath scrim;
                 scrim.setFillRule(Qt::OddEvenFill);
                 scrim.addRect(QRectF(rect()));
                 scrim.addPolygon(poly);
                 painter.fillPath(scrim, QColor(0, 0, 0, 145));
 
-                // Crisp 1px frame + Rule of Thirds 3x3 grid along crop frame axes.
-                painter.setRenderHint(QPainter::Antialiasing, m_cropAngleDeg != 0);
+                // Crisp 1px axis-aligned frame + Rule of Thirds 3x3 grid inside crop box.
+                painter.setRenderHint(QPainter::Antialiasing, false);
                 if (viewW >= 24.0 && viewH >= 24.0) {
                     const QLineF gridLines[] = {
                         {tl + (tr - tl) / 3.0, bl + (br - bl) / 3.0},

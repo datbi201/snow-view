@@ -177,12 +177,28 @@
             <translation>Разрешите Snow Shot доступ к Finder в разделе «Системные настройки &gt; Конфиденциальность и безопасность &gt; Автоматизация», затем повторите попытку</translation>
         </message>
         <message>
+            <source>Angle (1° step)</source>
+            <translation>Угол (шаг 1°)</translation>
+        </message>
+        <message>
             <source>Apply</source>
             <translation>Применить</translation>
         </message>
         <message>
+            <source>Apply adjust (Enter)</source>
+            <translation>Применить настройки (Enter)</translation>
+        </message>
+        <message>
             <source>Apply crop (Enter)</source>
             <translation>Применить обрезку (Enter)</translation>
+        </message>
+        <message>
+            <source>Aspect ratio</source>
+            <translation>Соотношение сторон</translation>
+        </message>
+        <message>
+            <source>Auto</source>
+            <translation>Авто</translation>
         </message>
         <message>
             <source>Auto enhance</source>
@@ -195,6 +211,10 @@
         <message>
             <source>Cancel</source>
             <translation>Отмена</translation>
+        </message>
+        <message>
+            <source>Cancel adjust (Esc)</source>
+            <translation>Отменить настройки (Esc)</translation>
         </message>
         <message>
             <source>Cancel crop (Esc)</source>
@@ -213,12 +233,32 @@
             <translation>Не удалось прочитать выбранные файлы изображений. Повторите попытку</translation>
         </message>
         <message>
+            <source>Crop &amp; Straighten</source>
+            <translation>Обрезка и выравнивание</translation>
+        </message>
+        <message>
             <source>Crop image (C)</source>
             <translation>Обрезать изображение (C)</translation>
         </message>
         <message>
-            <source>Crop rotation angle (-180° to +180°, 1° step)</source>
-            <translation>Угол поворота рамки обрезки (от -180° до +180°, шаг 1°)</translation>
+            <source>Empty</source>
+            <translation>Прозрачный</translation>
+        </message>
+        <message>
+            <source>Extended canvas fill</source>
+            <translation>Заполнение расширенной области</translation>
+        </message>
+        <message>
+            <source>Fill extended area with white</source>
+            <translation>Заполнить расширенную область белым</translation>
+        </message>
+        <message>
+            <source>Flatten and continue</source>
+            <translation>Объединить и продолжить</translation>
+        </message>
+        <message>
+            <source>Flatten annotations?</source>
+            <translation>Объединить аннотации?</translation>
         </message>
         <message>
             <source>Flip horizontally</source>
@@ -233,12 +273,20 @@
             <translation>Свободно</translation>
         </message>
         <message>
+            <source>Image rotation angle (-180° to +180°, 1° step)</source>
+            <translation>Угол поворота изображения (от -180° до +180°, шаг 1°)</translation>
+        </message>
+        <message>
+            <source>Leave extended area transparent</source>
+            <translation>Оставить расширенную область прозрачной</translation>
+        </message>
+        <message>
             <source>Original</source>
             <translation>Оригинал</translation>
         </message>
         <message>
-            <source>Remove the annotations before transforming the image, or export the flattened image and open it again</source>
-            <translation>Удалите аннотации перед преобразованием изображения или экспортируйте сведённое изображение и откройте его снова</translation>
+            <source>Reset</source>
+            <translation>Сбросить</translation>
         </message>
         <message>
             <source>Reset crop box</source>
@@ -253,6 +301,10 @@
             <translation>Повернуть против часовой стрелки</translation>
         </message>
         <message>
+            <source>Rotate image under crop frame (-45° to +45°, 1° step)</source>
+            <translation>Повернуть изображение под рамкой обрезки (от -45° до +45°, шаг 1°)</translation>
+        </message>
+        <message>
             <source>Saturation</source>
             <translation>Насыщенность</translation>
         </message>
@@ -265,8 +317,8 @@
             <translation>Snow Shot</translation>
         </message>
         <message>
-            <source>Straighten or rotate crop frame (-45° to +45°, 1° step)</source>
-            <translation>Выровнять или повернуть рамку обрезки (от -45° до +45°, шаг 1°)</translation>
+            <source>Swap ratio</source>
+            <translation>Поменять пропорции</translation>
         </message>
         <message>
             <source>Swap width and height ratio</source>
@@ -291,6 +343,18 @@
         <message>
             <source>The image is too large or there is not enough memory to load it</source>
             <translation>Изображение слишком большое или не хватает памяти для его загрузки</translation>
+        </message>
+        <message>
+            <source>This action applies to the flattened image. Existing annotations will be merged into the image and can still be undone back to editable layers within the next 10 commands.</source>
+            <translation>Действие применяется к сведённому изображению. Существующие аннотации будут объединены с изображением, и их можно будет вернуть к редактируемым слоям отменой в течение следующих 10 команд.</translation>
+        </message>
+        <message>
+            <source>White</source>
+            <translation>Белый</translation>
+        </message>
+        <message>
+            <source>White for JPEG/BMP, transparent for PNG</source>
+            <translation>Белый для JPEG/BMP, прозрачный для PNG</translation>
         </message>
     </context>
     <context>

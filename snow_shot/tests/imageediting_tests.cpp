@@ -1020,21 +1020,28 @@ void verifyPhotoshopCropMode(snow_shot::presentation::ImageEditingSource origina
     window.present(original);
     QApplication::processEvents();
     auto* canvas = window.canvas();
+    auto* editorWindow = canvas->window();
     auto* topToolbar = canvas->findChild<QWidget*>(QStringLiteral("snowViewImageToolbar"));
     auto* cropButton = canvas->findChild<AdButton*>(QStringLiteral("snowViewCrop"));
-    auto* cropBar = canvas->findChild<QWidget*>(QStringLiteral("snowViewCropBar"));
-    auto* ratioFree = canvas->findChild<AdButton*>(QStringLiteral("snowViewCropFree"));
-    auto* ratio1x1 = canvas->findChild<AdButton*>(QStringLiteral("snowViewCrop1x1"));
-    auto* angleSlider = canvas->findChild<AdSlider*>(QStringLiteral("snowViewCropAngleSlider"));
-    auto* angleInput = canvas->findChild<AdInputNumber*>(QStringLiteral("snowViewCropAngleInput"));
-    auto* resetButton = canvas->findChild<AdButton*>(QStringLiteral("snowViewCropReset"));
-    auto* cancelButton = canvas->findChild<AdButton*>(QStringLiteral("snowViewCropCancel"));
-    auto* applyButton = canvas->findChild<AdButton*>(QStringLiteral("snowViewCropApply"));
-    auto* sizeLabel = canvas->findChild<QLabel*>(QStringLiteral("snowViewCropSizeLabel"));
-    require(topToolbar && cropButton && cropBar && ratioFree && ratio1x1 && angleSlider &&
-                angleInput && resetButton && cancelButton && applyButton && sizeLabel &&
-                !cropBar->isVisible(),
-            "Photoshop crop bar initializes hidden with all controls including angle adjustment");
+    auto* taskPane = editorWindow->findChild<QWidget*>(QStringLiteral("snowViewTaskPane"));
+    auto* cropPane = editorWindow->findChild<QWidget*>(QStringLiteral("snowViewCropPane"));
+    auto* ratioFree = taskPane->findChild<AdButton*>(QStringLiteral("snowViewCropFree"));
+    auto* ratio1x1 = taskPane->findChild<AdButton*>(QStringLiteral("snowViewCrop1x1"));
+    auto* angleSlider = taskPane->findChild<AdSlider*>(QStringLiteral("snowViewCropAngleSlider"));
+    auto* angleInput =
+        taskPane->findChild<AdInputNumber*>(QStringLiteral("snowViewCropAngleInput"));
+    auto* fillAuto = taskPane->findChild<AdButton*>(QStringLiteral("snowViewCropFillAuto"));
+    auto* fillWhite = taskPane->findChild<AdButton*>(QStringLiteral("snowViewCropFillWhite"));
+    auto* fillEmpty = taskPane->findChild<AdButton*>(QStringLiteral("snowViewCropFillTransparent"));
+    auto* resetButton = taskPane->findChild<AdButton*>(QStringLiteral("snowViewCropReset"));
+    auto* cancelButton = taskPane->findChild<AdButton*>(QStringLiteral("snowViewCropCancel"));
+    auto* applyButton = taskPane->findChild<AdButton*>(QStringLiteral("snowViewCropApply"));
+    auto* sizeLabel = taskPane->findChild<QLabel*>(QStringLiteral("snowViewCropSizeLabel"));
+    require(topToolbar && cropButton && taskPane && cropPane && ratioFree && ratio1x1 &&
+                angleSlider && angleInput && fillAuto && fillWhite && fillEmpty && resetButton &&
+                cancelButton && applyButton && sizeLabel && !taskPane->isVisible(),
+            "right-side crop Task Pane initializes hidden with aspect, 1-degree angle, and fill "
+            "controls");
     require(qRound(angleInput->singleStep()) == 1 && qRound(angleInput->minimum()) == -180 &&
                 qRound(angleInput->maximum()) == 180 && qRound(angleSlider->minimum()) == -45 &&
                 qRound(angleSlider->maximum()) == 45,
@@ -1043,11 +1050,12 @@ void verifyPhotoshopCropMode(snow_shot::presentation::ImageEditingSource origina
     cropButton->click();
     QApplication::processEvents();
     require(canvas->mode() == ImageEditingCanvas::Mode::CropRect && cropButton->isChecked() &&
-                cropBar->isVisible() && canvas->cropPixelRect() == original.image.rect() &&
+                taskPane->isVisible() && cropPane->isVisible() &&
+                canvas->cropPixelRect() == original.image.rect() &&
                 canvas->cropAngleDegrees() == 0 &&
-                cropBar->geometry().top() > topToolbar->geometry().bottom(),
-            "entering Photoshop crop mode checks the button, reveals the crop bar below the top "
-            "toolbar, and selects full image at 0 degrees");
+                taskPane->mapToGlobal(QPoint(0, 0)).x() >=
+                    canvas->mapToGlobal(QPoint(canvas->width(), 0)).x() - 1,
+            "entering crop opens docked right Task Pane beside canvas with full box at 0 degrees");
 
     ratio1x1->click();
     QApplication::processEvents();
@@ -1057,12 +1065,14 @@ void verifyPhotoshopCropMode(snow_shot::presentation::ImageEditingSource origina
 
     angleInput->setValue(1);
     QApplication::processEvents();
-    require(canvas->cropAngleDegrees() == 1 && qRound(angleSlider->value()) == 1,
-            "1-degree step input rotates the crop box by exactly 1 degree and syncs slider");
+    require(canvas->cropAngleDegrees() == 1 && qRound(angleSlider->value()) == 1 &&
+                canvas->cropPixelRect() == square,
+            "1-degree rotation tilts underlying image while keeping crop frame size invariant");
     angleSlider->setValue(-5);
     QApplication::processEvents();
-    require(canvas->cropAngleDegrees() == -5 && qRound(angleInput->value()) == -5,
-            "angle slider rotates the crop box by exact integer degrees and syncs numeric input");
+    require(canvas->cropAngleDegrees() == -5 && qRound(angleInput->value()) == -5 &&
+                canvas->cropPixelRect() == square,
+            "angle slider rotates underlying image by integer degrees and syncs numeric input");
 
     resetButton->click();
     QApplication::processEvents();
@@ -1070,7 +1080,7 @@ void verifyPhotoshopCropMode(snow_shot::presentation::ImageEditingSource origina
                 qRound(angleInput->value()) == 0 && ratioFree->isChecked(),
             "reset restores Free preset, 0-degree angle, and full image crop box");
 
-    // Drag outside TopRight corner to rotate Photoshop crop frame clockwise by +7 degrees.
+    // Drag outside TopRight corner to rotate underlying image clockwise by +7 degrees.
     const auto viewPos = [&](QPointF pixelPos) {
         const QPointF rel(pixelPos.x() / double(original.image.width()),
                           pixelPos.y() / double(original.image.height()));
@@ -1087,8 +1097,9 @@ void verifyPhotoshopCropMode(snow_shot::presentation::ImageEditingSource origina
     mouse(canvas, QEvent::MouseButtonRelease, rotEnd, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
     QApplication::processEvents();
     require(canvas->cropAngleDegrees() == 7 && qRound(angleInput->value()) == 7 &&
-                qRound(angleSlider->value()) == 7,
-            "corner outer-ring drag rotates crop frame accurate to 1 degree");
+                qRound(angleSlider->value()) == 7 &&
+                canvas->cropPixelRect() == original.image.rect(),
+            "outer-corner drag rotates image by 1-degree precision without shrinking crop frame");
     angleInput->setValue(0);
     QApplication::processEvents();
     resetButton->click();
@@ -1106,15 +1117,15 @@ void verifyPhotoshopCropMode(snow_shot::presentation::ImageEditingSource origina
     const QRect altCropped = canvas->cropPixelRect();
     require(altCropped.width() < 12 && altCropped.height() < 10 && altCropped.left() > 0 &&
                 altCropped.top() > 0,
-            "Alt+handle drag scales Photoshop crop box symmetrically from center");
+            "Alt+handle drag scales crop box symmetrically from center");
 
     QKeyEvent cancelKey(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
     QApplication::sendEvent(canvas, &cancelKey);
     QApplication::processEvents();
-    require(canvas->mode() == ImageEditingCanvas::Mode::Pan && !cropBar->isVisible() &&
+    require(canvas->mode() == ImageEditingCanvas::Mode::Pan && !taskPane->isVisible() &&
                 !cropButton->isChecked() && window.document()->image() == original.image &&
                 !window.dirty(),
-            "Esc cancels Photoshop crop without modifying the document");
+            "Esc cancels crop and hides Task Pane without modifying the document");
 
     cropButton->click();
     QApplication::processEvents();
@@ -1131,10 +1142,10 @@ void verifyPhotoshopCropMode(snow_shot::presentation::ImageEditingSource origina
             "corner handle drag resizes crop box toward target pixel");
     applyButton->click();
     awaitCondition([&] { return canvas->mode() == ImageEditingCanvas::Mode::Pan; },
-                   "Apply exits Photoshop crop mode");
-    require(!cropBar->isVisible() && !cropButton->isChecked() && window.dirty() &&
+                   "Apply exits crop mode");
+    require(!taskPane->isVisible() && !cropButton->isChecked() && window.dirty() &&
                 window.document()->image().size() == expected.size(),
-            "Apply commits a rectangular Photoshop crop of exact dimensions");
+            "Apply commits a rectangular crop of exact dimensions");
     for (int y = 0; y < expected.height(); ++y)
         for (int x = 0; x < expected.width(); ++x)
             require(window.document()->image().pixel(x, y) ==
@@ -1142,28 +1153,283 @@ void verifyPhotoshopCropMode(snow_shot::presentation::ImageEditingSource origina
                     "cropped image preserves exact source pixels");
     require(window.document()->undo() && window.document()->image() == original.image &&
                 !window.dirty(),
-            "Undo reverses Photoshop crop in a single history step");
+            "Undo reverses crop in a single history step");
     require(window.document()->redo() && window.document()->image().size() == expected.size() &&
                 window.dirty(),
-            "Redo reapplies Photoshop crop");
+            "Redo reapplies crop");
 
-    // Verify committing a rotated crop (+5 degrees) straightens output and is undoable.
+    // Verify extending crop box beyond source bounds: White for JPG/White, transparent for
+    // PNG/Empty.
+    const QImage preExtended = window.document()->image();
+    const auto viewPosCurrent = [&](QPointF pixelPos) {
+        const QSize curSz = window.document()->image().size();
+        const QRectF bounds = window.document()->bounds();
+        return canvas->canvasToViewTransform().map(
+            QPointF(bounds.left() + (pixelPos.x() / curSz.width()) * bounds.width(),
+                    bounds.top() + (pixelPos.y() / curSz.height()) * bounds.height()));
+    };
+    cropButton->click();
+    QApplication::processEvents();
+    const QPointF curBr = viewPosCurrent(QPointF(preExtended.width(), preExtended.height()));
+    const QPointF widerBr =
+        viewPosCurrent(QPointF(preExtended.width() + 4.0, preExtended.height() + 4.0));
+    mouse(canvas, QEvent::MouseButtonPress, curBr, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    mouse(canvas, QEvent::MouseMove, widerBr, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    mouse(canvas, QEvent::MouseButtonRelease, widerBr, Qt::LeftButton, Qt::NoButton,
+          Qt::NoModifier);
+    QApplication::processEvents();
+    const QRect extendedRect = canvas->cropPixelRect();
+    require(extendedRect.width() > preExtended.width() &&
+                extendedRect.height() > preExtended.height(),
+            "crop handle can expand freely beyond original image bounds");
+    fillWhite->click();
+    QApplication::processEvents();
+    applyButton->click();
+    awaitCondition([&] { return canvas->mode() == ImageEditingCanvas::Mode::Pan; },
+                   "White-filled extended crop commits");
+    require(window.document()->image().size() == extendedRect.size() &&
+                window.document()->image().pixelColor(
+                    extendedRect.width() - 1, extendedRect.height() - 1) == QColor(Qt::white),
+            "extended crop fills outer region with white when White is active");
+    require(window.document()->undo() && window.document()->image() == preExtended,
+            "Undo reverses extended White crop cleanly");
+
+    cropButton->click();
+    QApplication::processEvents();
+    const QPointF curBr2 = viewPosCurrent(QPointF(preExtended.width(), preExtended.height()));
+    const QPointF widerBr2 =
+        viewPosCurrent(QPointF(preExtended.width() + 4.0, preExtended.height() + 4.0));
+    mouse(canvas, QEvent::MouseButtonPress, curBr2, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    mouse(canvas, QEvent::MouseMove, widerBr2, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    mouse(canvas, QEvent::MouseButtonRelease, widerBr2, Qt::LeftButton, Qt::NoButton,
+          Qt::NoModifier);
+    QApplication::processEvents();
+    fillEmpty->click();
+    QApplication::processEvents();
+    applyButton->click();
+    awaitCondition([&] { return canvas->mode() == ImageEditingCanvas::Mode::Pan; },
+                   "Transparent extended crop commits");
+    require(window.document()
+                    ->image()
+                    .pixelColor(extendedRect.width() - 1, extendedRect.height() - 1)
+                    .alpha() == 0,
+            "extended crop leaves outer region transparent when Empty/PNG is active");
+    require(window.document()->undo() && window.document()->image() == preExtended,
+            "Undo reverses transparent extended crop cleanly");
+
+    // Verify rotating underlying image by +5 degrees under an upright crop frame.
     const QImage preRotated = window.document()->image();
     cropButton->click();
     QApplication::processEvents();
     angleInput->setValue(5);
     QApplication::processEvents();
     const QSize rotatedSize = canvas->cropPixelRect().size();
-    require(rotatedSize.width() > 0 && rotatedSize.height() > 0 && canvas->cropAngleDegrees() == 5,
-            "5-degree rotation keeps rotated crop size valid inside bounds");
+    require(rotatedSize == preRotated.size() && canvas->cropAngleDegrees() == 5,
+            "5-degree image rotation preserves exact upright crop frame size");
     applyButton->click();
     awaitCondition([&] { return canvas->mode() == ImageEditingCanvas::Mode::Pan; },
-                   "Apply commits rotated Photoshop crop");
+                   "Apply commits rotated-image crop");
     require(window.dirty() && window.document()->image().size() == rotatedSize &&
                 window.document()->image() != preRotated,
-            "rotated crop produces expected output dimensions");
+            "rotated-image crop commits transformed raster cleanly");
     require(window.document()->undo() && window.document()->image() == preRotated,
             "Undo restores prior image after rotated crop");
+    window.shutdown();
+}
+void verifyAnnotationFlattenConfirmAndTenStepUndo(
+    snow_shot::presentation::ImageEditingSource original) {
+    using namespace snow_shot::presentation;
+    using adqt::widgets::AdButton;
+    ImageEditingWindow window;
+    window.present(original);
+    QApplication::processEvents();
+    auto* canvas = window.canvas();
+    auto* flipH = canvas->findChild<AdButton*>(QStringLiteral("snowViewFlipHorizontal"));
+    require(flipH && !window.document()->runtime().hasDocumentContent(),
+            "flatten test starts without vector annotations");
+    const QByteArray tx = window.document()->runtime().applyAnnotationTransaction(QByteArrayLiteral(
+        R"({"version":1,"operations":[{"type":"rectangle","bounds":[1,1,4,4]}]})"));
+    require(!tx.isEmpty() && window.document()->runtime().hasDocumentContent(),
+            "added live vector annotation before transform");
+    const QImage preFlattenImage = window.document()->image();
+
+    flipH->click();
+    QApplication::processEvents();
+    auto* flattenModal =
+        window.findChild<adqt::widgets::AdModal*>(QStringLiteral("snowViewFlattenConfirmModal"));
+    require(flattenModal && flattenModal->isOpen() &&
+                window.document()->image() == preFlattenImage &&
+                window.document()->runtime().hasDocumentContent(),
+            "transform with annotations asks confirmation before flattening");
+    flattenModal->reject();
+    awaitCondition(
+        [&] {
+            QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            return !window.findChild<adqt::widgets::AdModal*>(
+                QStringLiteral("snowViewFlattenConfirmModal"));
+        },
+        "rejecting flatten dismisses confirmation");
+    require(window.document()->image() == preFlattenImage &&
+                window.document()->runtime().hasDocumentContent(),
+            "cancelling flatten confirmation leaves vector annotations and image intact");
+
+    flipH->click();
+    QApplication::processEvents();
+    flattenModal =
+        window.findChild<adqt::widgets::AdModal*>(QStringLiteral("snowViewFlattenConfirmModal"));
+    require(flattenModal && flattenModal->isOpen(), "flatten confirmation reopens cleanly");
+    flattenModal->accept();
+    awaitCondition([&] { return window.document()->image() != preFlattenImage; },
+                   "accepting confirmation flattens and flips base image");
+    require(!window.document()->runtime().hasDocumentContent() && window.document()->canUndo(),
+            "post-flatten state has empty vector runtime and undoable flatten checkpoint");
+
+    // Apply 10 subsequent commands and verify Undo still returns to live editable vector layer.
+    for (int i = 0; i < 10; ++i) {
+        QImage flipped = window.document()->image().flipped(Qt::Vertical);
+        require(window.document()->applyBaseImage(std::move(flipped)),
+                "apply post-flatten command within 10-step retention window");
+    }
+    for (int i = 0; i < 10; ++i)
+        require(window.document()->undo(), "undo post-flatten command inside 10-step window");
+    require(window.document()->canUndo() && window.document()->undo(),
+            "undo across flatten boundary after 10 commands");
+    require(window.document()->runtime().hasDocumentContent() &&
+                window.document()->image() == preFlattenImage,
+            "undo across flatten boundary restores live editable vector annotations and image");
+    require(window.document()->redo() && !window.document()->runtime().hasDocumentContent() &&
+                window.document()->image() != preFlattenImage,
+            "redo steps forward back to flattened transformed image");
+
+    // Exceed 10 post-flatten commands and confirm vector checkpoint expires cleanly beyond 10.
+    for (int i = 0; i < 11; ++i) {
+        QImage toggled = window.document()->image().flipped(Qt::Horizontal);
+        require(window.document()->applyBaseImage(std::move(toggled)),
+                "apply command exceeding 10-step retention limit");
+    }
+    for (int i = 0; i < 11; ++i)
+        require(window.document()->undo(), "undo all 11 post-flatten commands");
+    require(!window.document()->canUndo() && !window.document()->runtime().hasDocumentContent(),
+            "pre-flatten vector checkpoint expires once post-flatten depth exceeds 10 commands");
+    window.shutdown();
+}
+void verifyAdjustTaskPaneLivePreview(snow_shot::presentation::ImageEditingSource original) {
+    using namespace snow_shot::presentation;
+    using adqt::widgets::AdButton;
+    using adqt::widgets::AdSlider;
+    ImageEditingWindow window;
+    window.present(original);
+    QApplication::processEvents();
+    auto* canvas = window.canvas();
+    auto* editorWindow = canvas->window();
+    auto* adjustButton = canvas->findChild<AdButton*>(QStringLiteral("snowViewAdjust"));
+    auto* taskPane = editorWindow->findChild<QWidget*>(QStringLiteral("snowViewTaskPane"));
+    auto* adjustPane = editorWindow->findChild<QWidget*>(QStringLiteral("snowViewAdjustPane"));
+    auto* brightness =
+        taskPane->findChild<AdSlider*>(QStringLiteral("snowViewAdjustBrightnessSlider"));
+    auto* cancelBtn = taskPane->findChild<AdButton*>(QStringLiteral("snowViewAdjustCancel"));
+    auto* applyBtn = taskPane->findChild<AdButton*>(QStringLiteral("snowViewAdjustApply"));
+    require(adjustButton && taskPane && adjustPane && brightness && cancelBtn && applyBtn &&
+                !taskPane->isVisible(),
+            "Adjust right Task Pane controls exist and start hidden");
+
+    adjustButton->click();
+    QApplication::processEvents();
+    require(taskPane->isVisible() && adjustPane->isVisible() && adjustButton->isChecked() &&
+                editorWindow->findChildren<QDialog*>().isEmpty(),
+            "Adjust opens right-side Task Pane inline without a separate modal QDialog");
+
+    brightness->setValue(50);
+    awaitCondition([&] { return window.document()->hasPreviewImage(); },
+                   "Adjust slider updates live preview directly on main canvas");
+    require(window.document()->displayImage() != original.image &&
+                window.document()->image() == original.image && !window.dirty(),
+            "live Adjust preview updates display without mutating document history or dirty");
+
+    cancelBtn->click();
+    QApplication::processEvents();
+    require(!taskPane->isVisible() && !adjustButton->isChecked() &&
+                !window.document()->hasPreviewImage() &&
+                window.document()->image() == original.image && !window.dirty(),
+            "Cancel clears live Adjust preview and closes right Task Pane cleanly");
+
+    adjustButton->click();
+    QApplication::processEvents();
+    brightness->setValue(30);
+    awaitCondition([&] { return window.document()->hasPreviewImage(); },
+                   "Adjust slider activates live preview before Apply");
+    applyBtn->click();
+    QApplication::processEvents();
+    require(!taskPane->isVisible() && !window.document()->hasPreviewImage() &&
+                window.document()->image() != original.image && window.dirty(),
+            "Apply commits full-res adjustment, clears transient preview, and marks dirty");
+    require(window.document()->undo() && window.document()->image() == original.image &&
+                !window.dirty(),
+            "Undo reverses committed Adjust edit cleanly");
+    window.shutdown();
+}
+void verifySaveDefaultsToCurrentFilePath() {
+    using namespace snow_shot::presentation;
+    QTemporaryDir dir;
+    require(dir.isValid(), "save default temp dir");
+    const QString filePath = dir.filePath(QStringLiteral("report.photo.v2.jpg"));
+    QImage sample(24, 18, QImage::Format_ARGB32);
+    sample.fill(QColor(40, 120, 200));
+    require(sample.save(filePath, "JPG"), "write initial JPG sample for save test");
+
+    ImageEditingWindow window;
+    bool loadDone = false;
+    bool loadOk = false;
+    QObject::connect(&window, &ImageEditingWindow::loaded, &window, [&](bool ok) {
+        loadDone = true;
+        loadOk = ok;
+    });
+    window.presentFile(filePath);
+    awaitCondition([&] { return loadDone && loadOk; }, "load file for Save dialog default test");
+
+    snow_shot::storage::ScreenshotSettings settings;
+    const QString previousDialogMode = settings.saveAsFileDialog();
+    const auto restoreSettings =
+        qScopeGuard([&] { static_cast<void>(settings.setSaveAsFileDialog(previousDialogMode)); });
+    const bool nativeDisabled = QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    const auto restoreNative = qScopeGuard(
+        [&] { QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, nativeDisabled); });
+
+    static_cast<void>(settings.setSaveAsFileDialog(QStringLiteral("system")));
+    window.palette()->saveRequested();
+    auto* nativeSave = window.canvas()->window()->findChild<QFileDialog*>(
+        QStringLiteral("screenshotManualSaveDialog"));
+    require(nativeSave, "system Save dialog opens for file-backed editor");
+    const QStringList selected = nativeSave->selectedFiles();
+    require(
+        !selected.isEmpty() &&
+            QFileInfo(nativeSave->directory().absolutePath()).canonicalFilePath() ==
+                QFileInfo(dir.path()).canonicalFilePath() &&
+            QFileInfo(selected.first()).canonicalFilePath() ==
+                QFileInfo(filePath).canonicalFilePath() &&
+            nativeSave->selectedNameFilter().contains(QStringLiteral("jpg"), Qt::CaseInsensitive),
+        "system Save dialog defaults to original file directory, path, stem, and JPEG format");
+    nativeSave->reject();
+    QApplication::processEvents();
+    QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+    static_cast<void>(settings.setSaveAsFileDialog(QStringLiteral("snow_shot")));
+    window.palette()->saveRequested();
+    auto* customModal =
+        window.findChild<adqt::widgets::AdModal*>(QStringLiteral("screenshotSaveAsFileModal"));
+    require(customModal && customModal->isOpen() && customModal->contentWidget(),
+            "custom Save dialog opens for file-backed editor");
+    auto* dirEdit =
+        customModal->contentWidget()->findChild<QLineEdit*>(QStringLiteral("saveDirectoryInput"));
+    auto* nameEdit =
+        customModal->contentWidget()->findChild<QLineEdit*>(QStringLiteral("saveFilenameInput"));
+    require(dirEdit && nameEdit &&
+                QDir::cleanPath(dirEdit->text()) == QDir::cleanPath(dir.path()) &&
+                nameEdit->text() == QStringLiteral("report.photo.v2"),
+            "custom Save dialog pre-fills original directory and stem");
+    customModal->reject();
+    QApplication::processEvents();
     window.shutdown();
 }
 void verifySnowViewFilmstripAndWheel() {
@@ -2184,6 +2450,9 @@ void runImageEditingTests() {
     const auto original = source();
     verifyCanvasToolbar(original);
     verifyPhotoshopCropMode(original);
+    verifyAnnotationFlattenConfirmAndTenStepUndo(original);
+    verifyAdjustTaskPaneLivePreview(original);
+    verifySaveDefaultsToCurrentFilePath();
     verifySnowViewFilmstripAndWheel();
     verifyLoadingFeedback(original);
     verifyRecognitionFeedback(original);

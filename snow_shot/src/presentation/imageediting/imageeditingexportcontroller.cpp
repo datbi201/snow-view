@@ -302,10 +302,13 @@ struct ImageEditingExportController::Impl {
     }
 #endif
     void image(QPointer<Request> request, Operation operation, ScreenshotExportSource source,
-               QWidget* owner, QWidget* stackingOwner) {
+               QWidget* owner, QWidget* stackingOwner,
+               ImageEditingExportController::SaveOptions saveOptions = {}) {
         request->artifact = std::make_shared<ScreenshotExportArtifact>(std::move(source));
         const auto artifact = request->artifact;
-        const auto done = [this, request](auto result) {
+        const auto done = [this, request, onSaved = saveOptions.fileSaved](auto result) {
+            if (result.succeeded() && onSaved && !result.savedPath.isEmpty())
+                onSaved(result.savedPath);
             finish(request, result.succeeded(), result.error);
         };
         switch (operation) {
@@ -346,15 +349,17 @@ struct ImageEditingExportController::Impl {
         case Operation::Save:
             if (storage::ScreenshotSettings().saveAsFileDialog() == QStringLiteral("snow_shot")) {
                 if (!ScreenshotSaveAsFileDialog::open(
-                        request, owner, artifact, {},
+                        request, owner, artifact, saveOptions.fileSaved,
                         [this, request](bool saved) { finish(request, saved); }, stackingOwner,
-                        Qt::WindowModal))
+                        Qt::WindowModal, {}, false, saveOptions.initialFilePath))
                     finish(
                         request, false,
                         QCoreApplication::translate("snow_shot::presentation::ImageEditingWindow",
                                                     "Export could not be started"));
             } else {
-                const auto save = ScreenshotManualSaveService::open(request, owner, artifact, done);
+                const auto save = ScreenshotManualSaveService::open(request, owner, artifact, done,
+                                                                    Qt::WindowModal, {},
+                                                                    saveOptions.initialFilePath);
                 if (!request || active != request)
                     return;
                 request->save = save;
@@ -469,13 +474,15 @@ bool ImageEditingExportController::canStart(Operation operation) const {
     return !m_impl->active && (operation == Operation::Copy || !m_impl->copy);
 }
 void ImageEditingExportController::start(Operation operation, Content content, QWidget* owner,
-                                         QWidget* stackingOwner, Completion completion) {
+                                         QWidget* stackingOwner, Completion completion,
+                                         SaveOptions saveOptions) {
     if (operation == Operation::Copy || !canStart(operation) || !owner)
         return;
     auto& d = *m_impl;
     auto* request = d.begin(operation, owner, std::move(completion));
     if (auto* source = std::get_if<ScreenshotExportSource>(&content)) {
-        d.image(request, operation, std::move(*source), owner, stackingOwner);
+        d.image(request, operation, std::move(*source), owner, stackingOwner,
+                std::move(saveOptions));
         return;
     }
 #if SNOW_SHOT_ENABLE_IMAGE_CONVERSION || SNOW_SHOT_ENABLE_LATEX_RECOGNITION ||                     \

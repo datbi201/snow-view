@@ -18,7 +18,8 @@ class NativeSaveSession final : public QObject {
     NativeSaveSession(QObject* lifetime, QWidget* owner,
                       std::shared_ptr<ScreenshotExportArtifact> source,
                       ScreenshotManualSaveService::Completion completion,
-                      Qt::WindowModality modality, ScreenshotManualSaveService::Saving saving)
+                      Qt::WindowModality modality, ScreenshotManualSaveService::Saving saving,
+                      const QString& initialFilePath = {})
         : QObject(lifetime), m_source(std::move(source)), m_completion(std::move(completion)),
           m_saving(std::move(saving)),
           m_encoding(snow_shot::presentation::screenshotEncodingOptions(
@@ -26,8 +27,8 @@ class NativeSaveSession final : public QObject {
           m_pdf{screenshot_pdf::pageSizeForKey(
               snow_shot::storage::ScreenshotSettings().pdfPageSize())} {
         setObjectName(QStringLiteral("screenshotManualSaveSession"));
-        const auto defaults =
-            screenshotManualSaveDefaults(QDateTime::currentDateTime(), m_source->exportContext());
+        const auto defaults = screenshotManualSaveDefaults(
+            QDateTime::currentDateTime(), m_source->exportContext(), initialFilePath);
         auto* dialog = new QFileDialog(
             owner, QCoreApplication::translate("ScreenshotSaveAsFileDialog", "Save as file"));
         m_dialog = dialog;
@@ -37,9 +38,14 @@ class NativeSaveSession final : public QObject {
         dialog->setWindowModality(modality);
         dialog->setAcceptMode(QFileDialog::AcceptSave);
         dialog->setFileMode(QFileDialog::AnyFile);
+        const QFileInfo initialInfo(defaults.initialPath);
+        const QString initialDirectory = initialInfo.absolutePath();
+        if (!initialDirectory.isEmpty())
+            dialog->setDirectory(initialDirectory);
         dialog->setNameFilter(ScreenshotImageFileService::saveDialogFilter());
         dialog->selectNameFilter(defaults.selectedFilter);
-        dialog->selectFile(defaults.initialPath);
+        dialog->selectFile(initialInfo.fileName().isEmpty() ? defaults.initialPath
+                                                            : initialInfo.fileName());
         connect(dialog, &QDialog::rejected, this, [this] { cancel(); });
         connect(dialog, &QDialog::accepted, this, [this] { save(); });
         connect(dialog, &QObject::destroyed, this, [this] {
@@ -168,16 +174,18 @@ bool ScreenshotManualSaveHandle::isValid() const {
     return !m_session.isNull();
 }
 
-ScreenshotManualSaveHandle ScreenshotManualSaveService::open(
-    QObject* lifetime, QWidget* owner, std::shared_ptr<ScreenshotExportArtifact> source,
-    Completion completion, Qt::WindowModality modality, Saving saving) {
+ScreenshotManualSaveHandle
+ScreenshotManualSaveService::open(QObject* lifetime, QWidget* owner,
+                                  std::shared_ptr<ScreenshotExportArtifact> source,
+                                  Completion completion, Qt::WindowModality modality, Saving saving,
+                                  const QString& initialFilePath) {
     auto* application = QCoreApplication::instance();
     if (!lifetime || !owner || !source || !source->isValid() || !completion || !application ||
         QThread::currentThread() != application->thread() ||
         lifetime->thread() != application->thread() || owner->thread() != application->thread())
         return {};
     auto* session = new NativeSaveSession(lifetime, owner, std::move(source), std::move(completion),
-                                          modality, std::move(saving));
+                                          modality, std::move(saving), initialFilePath);
     const QPointer<NativeSaveSession> guard(session);
     session->present();
     return guard ? ScreenshotManualSaveHandle(session) : ScreenshotManualSaveHandle{};

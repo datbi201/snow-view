@@ -71,6 +71,16 @@ class ImageEditingDocument final : public QObject {
     const QImage& image() const {
         return m_image;
     }
+    // SnowView: live non-destructive preview image (used while dragging Adjust sliders).
+    const QImage& displayImage() const {
+        return m_previewImage.isNull() ? m_image : m_previewImage;
+    }
+    bool hasPreviewImage() const {
+        return !m_previewImage.isNull();
+    }
+    void setPreviewImage(QImage image);
+    void clearPreviewImage();
+    static constexpr int kMaxVectorUndoCommandsAfterFlatten = 10;
     QRectF bounds() const;
     QPointF imagePixelAt(QPointF canvasPoint) const;
     quint64 baseState() const {
@@ -81,6 +91,8 @@ class ImageEditingDocument final : public QObject {
                m_baseEdits.contains(state);
     }
     QList<SnowCanvasBaseImageSource> baseImageSources() const;
+    // SnowView: synchronously render m_image + live runtime annotations at 1:1 resolution.
+    [[nodiscard]] QImage renderFlattenedBaseImage() const;
     static Crop prepareCrop(const QImage& image, CropAxis axis, int first, int last,
                             const std::function<bool()>& cancelled = {});
     bool applyCrop(Crop crop);
@@ -88,6 +100,12 @@ class ImageEditingDocument final : public QObject {
     // SnowView: replace the whole base raster (flip, rotate, color adjust) as one
     // undoable history step, chained with crops in the same host history sequence.
     bool applyBaseImage(QImage image);
+    // SnowView: replace base raster with transformed/flattened pixels, clear live vectors,
+    // and retain the pre-flatten vector layer undoable for up to 10 subsequent commands.
+    bool applyFlattenedBaseImage(QImage image);
+    void setCanvasGestureActive(bool active);
+    [[nodiscard]] bool canUndo() const;
+    [[nodiscard]] bool canRedo() const;
     struct HistoryTransition {
         bool redo = false;
         quint64 state = 0;
@@ -99,6 +117,8 @@ class ImageEditingDocument final : public QObject {
         // SnowView: true when this transition restores a whole-raster base edit;
         // `image` then already holds the final raster for the target state.
         bool baseEdit = false;
+        // SnowView: true when stepping backward/forward across a flatten boundary.
+        bool flattenBoundary = false;
     };
     HistoryTransition historyTransition(bool redo) const;
     static void prepareHistoryTransition(HistoryTransition& transition,
@@ -115,6 +135,7 @@ class ImageEditingDocument final : public QObject {
   signals:
     void changed();
     void baseImageChanged();
+    void previewImageChanged();
 
   private:
     struct CropEntry {
@@ -128,22 +149,53 @@ class ImageEditingDocument final : public QObject {
         QImage beforeImage;
         QImage afterImage;
     };
+    struct FlattenUndoEntry {
+        QByteArray preVectorHistory;
+        QImage preImage;
+        QList<SnowCanvasBaseImageSource> preSamplingSources;
+        SnowCanvasSmartEraseSnapshot preSmartErase;
+        quint64 preEpochId = 0;
+        int stepsFromFlatten = 0;
+    };
+    struct FlattenRedoEntry {
+        FlattenUndoEntry flattenEntry;
+        QByteArray postVectorHistory;
+        QImage postImage;
+        QList<SnowCanvasBaseImageSource> postSamplingSources;
+        SnowCanvasSmartEraseSnapshot postSmartErase;
+        quint64 postEpochId = 0;
+        quint64 postSerial = 0;
+        QHash<quint64, CropEntry> postCrops;
+        QHash<quint64, BaseEditEntry> postBaseEdits;
+    };
     bool travel(bool redo);
     void updateSources();
     void pruneCrops();
+    void recordPostFlattenCommand();
+    void adjustFlattenStepDistances(int delta);
     SnowCanvasRuntime m_runtime;
     QImage m_image;
+    QImage m_previewImage;
     QList<SnowCanvasBaseImageSource> m_samplingSources;
     QString m_originalFileName;
     QPointF m_origin;
     QSizeF m_unitsPerPixel;
     QHash<quint64, CropEntry> m_crops;
     QHash<quint64, BaseEditEntry> m_baseEdits;
+    QList<FlattenUndoEntry> m_flattenUndoStack;
+    QList<FlattenRedoEntry> m_flattenRedoStack;
     quint64 m_serial = 0;
+    quint64 m_flattenEpochId = 0;
+    quint64 m_nextFlattenEpochId = 0;
+    bool m_inHostMutation = false;
+    bool m_traveling = false;
+    bool m_canvasGestureActive = false;
+    bool m_pendingCanvasGestureCommand = false;
     QByteArray m_saved;
     mutable QByteArray m_checkpointContent;
     mutable QByteArray m_checkpoint;
     mutable quint64 m_checkpointBaseState = 0;
+    mutable quint64 m_checkpointFlattenEpochId = 0;
     struct ExportCache {
         QByteArray checkpoint;
         QByteArray smartEraseKey;

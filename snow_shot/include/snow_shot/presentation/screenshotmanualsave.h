@@ -36,7 +36,8 @@ class ScreenshotManualSaveService final {
     using Saving = std::function<void()>;
     [[nodiscard]] static ScreenshotManualSaveHandle
     open(QObject* lifetime, QWidget* owner, std::shared_ptr<ScreenshotExportArtifact> source,
-         Completion completion, Qt::WindowModality modality = Qt::WindowModal, Saving saving = {});
+         Completion completion, Qt::WindowModality modality = Qt::WindowModal, Saving saving = {},
+         const QString& initialFilePath = {});
 };
 
 struct ScreenshotManualSaveDefaults final {
@@ -46,8 +47,28 @@ struct ScreenshotManualSaveDefaults final {
 
 [[nodiscard]] inline ScreenshotManualSaveDefaults
 screenshotManualSaveDefaults(const QDateTime& timestamp = QDateTime::currentDateTime(),
-                             const snow_shot::storage::ScreenshotExportContext& names = {}) {
+                             const snow_shot::storage::ScreenshotExportContext& names = {},
+                             const QString& initialFilePath = {}) {
     const snow_shot::storage::ScreenshotSettings settings;
+    if (!initialFilePath.isEmpty()) {
+        const QFileInfo info(initialFilePath);
+        const auto fallback =
+            ScreenshotImageFileService::formatForKey(settings.lastManualSaveFormat());
+        const auto detected = ScreenshotImageFileService::formatForPath(initialFilePath);
+        const auto format = detected.value_or(fallback);
+        const QString dir = info.absolutePath();
+        if (!dir.isEmpty())
+            static_cast<void>(QDir().mkpath(dir));
+        const QString initialPath =
+            detected
+                ? info.absoluteFilePath()
+                : (!info.completeBaseName().isEmpty()
+                       ? QDir(dir).filePath(snow_shot::storage::composeExportFileName(
+                             info.completeBaseName(),
+                             QStringLiteral(".") + ScreenshotImageFileService::extension(format)))
+                       : info.absoluteFilePath());
+        return {initialPath, ScreenshotImageFileService::dialogFilter(format)};
+    }
     const QString directory = ScreenshotImageFileService::saveDialogDirectory(
         settings.lastManualSaveDirectory(), settings.imageSaveDirectory(), timestamp, names);
     static_cast<void>(QDir().mkpath(directory));

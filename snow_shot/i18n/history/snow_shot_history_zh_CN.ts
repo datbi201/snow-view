@@ -177,12 +177,28 @@
             <translation>请在“系统设置 &gt; 隐私与安全性 &gt; 自动化”中允许 Snow Shot 访问访达，然后重试</translation>
         </message>
         <message>
+            <source>Angle (1° step)</source>
+            <translation>角度（1° 步进）</translation>
+        </message>
+        <message>
             <source>Apply</source>
             <translation>应用</translation>
         </message>
         <message>
+            <source>Apply adjust (Enter)</source>
+            <translation>应用调整 (Enter)</translation>
+        </message>
+        <message>
             <source>Apply crop (Enter)</source>
             <translation>应用裁剪 (Enter)</translation>
+        </message>
+        <message>
+            <source>Aspect ratio</source>
+            <translation>宽高比</translation>
+        </message>
+        <message>
+            <source>Auto</source>
+            <translation>自动</translation>
         </message>
         <message>
             <source>Auto enhance</source>
@@ -195,6 +211,10 @@
         <message>
             <source>Cancel</source>
             <translation>取消</translation>
+        </message>
+        <message>
+            <source>Cancel adjust (Esc)</source>
+            <translation>取消调整 (Esc)</translation>
         </message>
         <message>
             <source>Cancel crop (Esc)</source>
@@ -213,12 +233,32 @@
             <translation>无法读取选中的图像文件，请重试</translation>
         </message>
         <message>
+            <source>Crop &amp; Straighten</source>
+            <translation>裁剪与拉直</translation>
+        </message>
+        <message>
             <source>Crop image (C)</source>
             <translation>裁剪图像 (C)</translation>
         </message>
         <message>
-            <source>Crop rotation angle (-180° to +180°, 1° step)</source>
-            <translation>裁剪旋转角度（-180° 至 +180°，步长 1°）</translation>
+            <source>Empty</source>
+            <translation>透明</translation>
+        </message>
+        <message>
+            <source>Extended canvas fill</source>
+            <translation>扩展画布填充</translation>
+        </message>
+        <message>
+            <source>Fill extended area with white</source>
+            <translation>用白色填充扩展区域</translation>
+        </message>
+        <message>
+            <source>Flatten and continue</source>
+            <translation>合并并继续</translation>
+        </message>
+        <message>
+            <source>Flatten annotations?</source>
+            <translation>是否合并标注？</translation>
         </message>
         <message>
             <source>Flip horizontally</source>
@@ -233,12 +273,20 @@
             <translation>自由</translation>
         </message>
         <message>
+            <source>Image rotation angle (-180° to +180°, 1° step)</source>
+            <translation>图像旋转角度（-180° 至 +180°，步长 1°）</translation>
+        </message>
+        <message>
+            <source>Leave extended area transparent</source>
+            <translation>保留扩展区域透明</translation>
+        </message>
+        <message>
             <source>Original</source>
             <translation>原始比例</translation>
         </message>
         <message>
-            <source>Remove the annotations before transforming the image, or export the flattened image and open it again</source>
-            <translation>请先删除标注再变换图像，或导出合并后的图像并重新打开</translation>
+            <source>Reset</source>
+            <translation>重置</translation>
         </message>
         <message>
             <source>Reset crop box</source>
@@ -253,6 +301,10 @@
             <translation>逆时针旋转</translation>
         </message>
         <message>
+            <source>Rotate image under crop frame (-45° to +45°, 1° step)</source>
+            <translation>在裁剪框下旋转图像（-45° 至 +45°，步长 1°）</translation>
+        </message>
+        <message>
             <source>Saturation</source>
             <translation>饱和度</translation>
         </message>
@@ -265,8 +317,8 @@
             <translation>Snow Shot</translation>
         </message>
         <message>
-            <source>Straighten or rotate crop frame (-45° to +45°, 1° step)</source>
-            <translation>拉直或旋转裁剪框（-45° 至 +45°，步长 1°）</translation>
+            <source>Swap ratio</source>
+            <translation>交换比例</translation>
         </message>
         <message>
             <source>Swap width and height ratio</source>
@@ -291,6 +343,18 @@
         <message>
             <source>The image is too large or there is not enough memory to load it</source>
             <translation>图像过大，或内存不足，无法加载</translation>
+        </message>
+        <message>
+            <source>This action applies to the flattened image. Existing annotations will be merged into the image and can still be undone back to editable layers within the next 10 commands.</source>
+            <translation>此操作将作用于合并后的图像。现有标注将合并到图像中，并在接下来的 10 步操作内仍可撤销恢复为可编辑图层。</translation>
+        </message>
+        <message>
+            <source>White</source>
+            <translation>白色</translation>
+        </message>
+        <message>
+            <source>White for JPEG/BMP, transparent for PNG</source>
+            <translation>JPEG/BMP 使用白色，PNG 保留透明</translation>
         </message>
     </context>
     <context>

@@ -177,12 +177,28 @@
             <translation>Allow Snow Shot to access Finder in System Settings &gt; Privacy &amp; Security &gt; Automation, then try again</translation>
         </message>
         <message>
+            <source>Angle (1° step)</source>
+            <translation>Angle (1° step)</translation>
+        </message>
+        <message>
             <source>Apply</source>
             <translation>Apply</translation>
         </message>
         <message>
+            <source>Apply adjust (Enter)</source>
+            <translation>Apply adjust (Enter)</translation>
+        </message>
+        <message>
             <source>Apply crop (Enter)</source>
             <translation>Apply crop (Enter)</translation>
+        </message>
+        <message>
+            <source>Aspect ratio</source>
+            <translation>Aspect ratio</translation>
+        </message>
+        <message>
+            <source>Auto</source>
+            <translation>Auto</translation>
         </message>
         <message>
             <source>Auto enhance</source>
@@ -195,6 +211,10 @@
         <message>
             <source>Cancel</source>
             <translation>Cancel</translation>
+        </message>
+        <message>
+            <source>Cancel adjust (Esc)</source>
+            <translation>Cancel adjust (Esc)</translation>
         </message>
         <message>
             <source>Cancel crop (Esc)</source>
@@ -213,12 +233,32 @@
             <translation>Could not read the selected image files. Please try again</translation>
         </message>
         <message>
+            <source>Crop &amp; Straighten</source>
+            <translation>Crop &amp; Straighten</translation>
+        </message>
+        <message>
             <source>Crop image (C)</source>
             <translation>Crop image (C)</translation>
         </message>
         <message>
-            <source>Crop rotation angle (-180° to +180°, 1° step)</source>
-            <translation>Crop rotation angle (-180° to +180°, 1° step)</translation>
+            <source>Empty</source>
+            <translation>Empty</translation>
+        </message>
+        <message>
+            <source>Extended canvas fill</source>
+            <translation>Extended canvas fill</translation>
+        </message>
+        <message>
+            <source>Fill extended area with white</source>
+            <translation>Fill extended area with white</translation>
+        </message>
+        <message>
+            <source>Flatten and continue</source>
+            <translation>Flatten and continue</translation>
+        </message>
+        <message>
+            <source>Flatten annotations?</source>
+            <translation>Flatten annotations?</translation>
         </message>
         <message>
             <source>Flip horizontally</source>
@@ -233,12 +273,20 @@
             <translation>Free</translation>
         </message>
         <message>
+            <source>Image rotation angle (-180° to +180°, 1° step)</source>
+            <translation>Image rotation angle (-180° to +180°, 1° step)</translation>
+        </message>
+        <message>
+            <source>Leave extended area transparent</source>
+            <translation>Leave extended area transparent</translation>
+        </message>
+        <message>
             <source>Original</source>
             <translation>Original</translation>
         </message>
         <message>
-            <source>Remove the annotations before transforming the image, or export the flattened image and open it again</source>
-            <translation>Remove the annotations before transforming the image, or export the flattened image and open it again</translation>
+            <source>Reset</source>
+            <translation>Reset</translation>
         </message>
         <message>
             <source>Reset crop box</source>
@@ -253,6 +301,10 @@
             <translation>Rotate counterclockwise</translation>
         </message>
         <message>
+            <source>Rotate image under crop frame (-45° to +45°, 1° step)</source>
+            <translation>Rotate image under crop frame (-45° to +45°, 1° step)</translation>
+        </message>
+        <message>
             <source>Saturation</source>
             <translation>Saturation</translation>
         </message>
@@ -265,8 +317,8 @@
             <translation>Snow Shot</translation>
         </message>
         <message>
-            <source>Straighten or rotate crop frame (-45° to +45°, 1° step)</source>
-            <translation>Straighten or rotate crop frame (-45° to +45°, 1° step)</translation>
+            <source>Swap ratio</source>
+            <translation>Swap ratio</translation>
         </message>
         <message>
             <source>Swap width and height ratio</source>
@@ -291,6 +343,18 @@
         <message>
             <source>The image is too large or there is not enough memory to load it</source>
             <translation>The image is too large or there is not enough memory to load it</translation>
+        </message>
+        <message>
+            <source>This action applies to the flattened image. Existing annotations will be merged into the image and can still be undone back to editable layers within the next 10 commands.</source>
+            <translation>This action applies to the flattened image. Existing annotations will be merged into the image and can still be undone back to editable layers within the next 10 commands.</translation>
+        </message>
+        <message>
+            <source>White</source>
+            <translation>White</translation>
+        </message>
+        <message>
+            <source>White for JPEG/BMP, transparent for PNG</source>
+            <translation>White for JPEG/BMP, transparent for PNG</translation>
         </message>
     </context>
     <context>

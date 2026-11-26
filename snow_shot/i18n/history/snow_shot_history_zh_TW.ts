@@ -177,12 +177,28 @@
             <translation>請在「系統設定 &gt; 隱私權與安全性 &gt; 自動化」中允許 Snow Shot 存取 Finder，然後再試一次</translation>
         </message>
         <message>
+            <source>Angle (1° step)</source>
+            <translation>角度（1° 步進）</translation>
+        </message>
+        <message>
             <source>Apply</source>
             <translation>套用</translation>
         </message>
         <message>
+            <source>Apply adjust (Enter)</source>
+            <translation>套用調整 (Enter)</translation>
+        </message>
+        <message>
             <source>Apply crop (Enter)</source>
             <translation>套用裁切 (Enter)</translation>
+        </message>
+        <message>
+            <source>Aspect ratio</source>
+            <translation>寬高比</translation>
+        </message>
+        <message>
+            <source>Auto</source>
+            <translation>自動</translation>
         </message>
         <message>
             <source>Auto enhance</source>
@@ -195,6 +211,10 @@
         <message>
             <source>Cancel</source>
             <translation>取消</translation>
+        </message>
+        <message>
+            <source>Cancel adjust (Esc)</source>
+            <translation>取消調整 (Esc)</translation>
         </message>
         <message>
             <source>Cancel crop (Esc)</source>
@@ -213,12 +233,32 @@
             <translation>無法讀取選取的影像檔案，請重試</translation>
         </message>
         <message>
+            <source>Crop &amp; Straighten</source>
+            <translation>裁切與拉直</translation>
+        </message>
+        <message>
             <source>Crop image (C)</source>
             <translation>裁切影像 (C)</translation>
         </message>
         <message>
-            <source>Crop rotation angle (-180° to +180°, 1° step)</source>
-            <translation>裁切旋轉角度（-180° 至 +180°，步長 1°）</translation>
+            <source>Empty</source>
+            <translation>透明</translation>
+        </message>
+        <message>
+            <source>Extended canvas fill</source>
+            <translation>擴展畫布填滿</translation>
+        </message>
+        <message>
+            <source>Fill extended area with white</source>
+            <translation>以白色填滿擴展區域</translation>
+        </message>
+        <message>
+            <source>Flatten and continue</source>
+            <translation>合併並繼續</translation>
+        </message>
+        <message>
+            <source>Flatten annotations?</source>
+            <translation>是否合併標註？</translation>
         </message>
         <message>
             <source>Flip horizontally</source>
@@ -233,12 +273,20 @@
             <translation>自由</translation>
         </message>
         <message>
+            <source>Image rotation angle (-180° to +180°, 1° step)</source>
+            <translation>影像旋轉角度（-180° 至 +180°，步長 1°）</translation>
+        </message>
+        <message>
+            <source>Leave extended area transparent</source>
+            <translation>保留擴展區域透明</translation>
+        </message>
+        <message>
             <source>Original</source>
             <translation>原始比例</translation>
         </message>
         <message>
-            <source>Remove the annotations before transforming the image, or export the flattened image and open it again</source>
-            <translation>請先刪除標註再變換影像，或匯出合併後的影像並重新開啟</translation>
+            <source>Reset</source>
+            <translation>重設</translation>
         </message>
         <message>
             <source>Reset crop box</source>
@@ -253,6 +301,10 @@
             <translation>逆時針旋轉</translation>
         </message>
         <message>
+            <source>Rotate image under crop frame (-45° to +45°, 1° step)</source>
+            <translation>在裁切框下旋轉影像（-45° 至 +45°，步長 1°）</translation>
+        </message>
+        <message>
             <source>Saturation</source>
             <translation>飽和度</translation>
         </message>
@@ -265,8 +317,8 @@
             <translation>Snow Shot</translation>
         </message>
         <message>
-            <source>Straighten or rotate crop frame (-45° to +45°, 1° step)</source>
-            <translation>拉直或旋轉裁切框（-45° 至 +45°，步長 1°）</translation>
+            <source>Swap ratio</source>
+            <translation>交換比例</translation>
         </message>
         <message>
             <source>Swap width and height ratio</source>
@@ -291,6 +343,18 @@
         <message>
             <source>The image is too large or there is not enough memory to load it</source>
             <translation>影像過大，或記憶體不足，無法載入</translation>
+        </message>
+        <message>
+            <source>This action applies to the flattened image. Existing annotations will be merged into the image and can still be undone back to editable layers within the next 10 commands.</source>
+            <translation>此操作將套用於合併後的影像。現有標註將合併至影像中，並在接下來的 10 步操作內仍可復原為可編輯圖層。</translation>
+        </message>
+        <message>
+            <source>White</source>
+            <translation>白色</translation>
+        </message>
+        <message>
+            <source>White for JPEG/BMP, transparent for PNG</source>
+            <translation>JPEG/BMP 使用白色，PNG 保留透明</translation>
         </message>
     </context>
     <context>

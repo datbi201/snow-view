@@ -25,6 +25,10 @@ class ImageEditingCanvas final : public SnowCanvasWidget, private SnowCanvasCust
     [[nodiscard]] int cropAngleDegrees() const {
         return m_cropAngleDeg;
     }
+    void setCropExtensionFillColor(QColor color);
+    [[nodiscard]] QColor cropExtensionFillColor() const {
+        return m_cropExtensionFillColor;
+    }
     void resetCropRect();
     [[nodiscard]] QRect cropPixelRect() const;
     [[nodiscard]] QRectF cropPixelBox() const {
@@ -92,7 +96,6 @@ class ImageEditingCanvas final : public SnowCanvasWidget, private SnowCanvasCust
     std::array<QPointF, 4> cropViewCorners() const;
     CropHandle cropHandleAt(const QPointF& viewPos) const;
     QCursor cropCursorForHandle(CropHandle handle, bool dragging) const;
-    void applyCropAngleConstraints();
     void initializeCropRect(std::optional<double> ratio);
     void updateCropDrag(const QPointF& pixelPos, Qt::KeyboardModifiers modifiers);
     void notifyCropRectChanged();
@@ -127,6 +130,7 @@ class ImageEditingCanvas final : public SnowCanvasWidget, private SnowCanvasCust
     std::optional<double> m_cropDragRatio;
     double m_cropDragStartPointerAngle = 0.0;
     int m_cropDragStartAngle = 0;
+    QColor m_cropExtensionFillColor{Qt::transparent};
     QImage m_recognitionBackground;
     QRectF m_recognitionBackgroundRect;
     bool m_recognitionActive = false;

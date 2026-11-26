@@ -63,19 +63,19 @@
 #include <QThread>
 #include <QStackedLayout>
 #include <QDateTime>
-#include <QDialog>
 #include <QDir>
 #include <QFontMetrics>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QImageReader>
 #include <QLabel>
 #include <QListWidget>
 #include <QLocale>
 #include <QPixmap>
-#include <QPushButton>
 #include <QScrollBar>
 #include <QSlider>
+#include <QStackedWidget>
 #include <QTransform>
 #include <algorithm>
 #include <array>
@@ -349,11 +349,13 @@ QImage snowViewDecodeThumbnail(const QString& path, QSize targetPixelSize,
     return reader.read();
 }
 
-// Theme-aware floating panel matching CanvasActionToolbar visuals for the Photoshop-style Crop bar.
-class SnowViewCropBarPanel final : public QWidget {
+// SnowView Rev0.3: theme-aware right-side docked Task Pane for Crop and Adjust controls.
+class SnowViewTaskPanePanel final : public QWidget {
   public:
-    explicit SnowViewCropBarPanel(QWidget* parent = nullptr) : QWidget(parent) {
-        setAttribute(Qt::WA_NoMousePropagation);
+    explicit SnowViewTaskPanePanel(QWidget* parent = nullptr) : QWidget(parent) {
+        setObjectName(QStringLiteral("snowViewTaskPane"));
+        setFixedWidth(280);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
         connect(&adqt::theme::ThemeManager::instance(), &adqt::theme::ThemeManager::themeChanged,
                 this, [this] { update(); });
     }
@@ -362,11 +364,9 @@ class SnowViewCropBarPanel final : public QWidget {
     void paintEvent(QPaintEvent*) override {
         const auto theme = adqt::theme::ThemeManager::instance().resolveTheme(this);
         QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing);
-        painter.setPen(theme.colorBorderSecondary);
-        painter.setBrush(theme.colorBgContainer);
-        painter.drawRoundedRect(QRectF(rect()).adjusted(.5, .5, -.5, -.5), theme.borderRadiusSM,
-                                theme.borderRadiusSM);
+        painter.fillRect(rect(), theme.colorBgContainer);
+        painter.setPen(QPen(theme.colorBorderSecondary, 1.0));
+        painter.drawLine(QPointF(0.5, 0.0), QPointF(0.5, static_cast<qreal>(height())));
     }
 };
 } // namespace
@@ -390,9 +390,11 @@ struct ImageEditingWindow::Impl {
     ScreenshotToolPaletteHost* host;
     ScreenshotToolPalette* palette;
     AdButton *fit, *actual;
-    // SnowView Rev0.2: folder filmstrip (async snow_image thumbnails), metadata bar,
-    // unified top canvas toolbar (transforms + crop + enhance + zoom), and Photoshop crop bar.
+    // SnowView Rev0.3 (1.6.5-0.2): docked right Task Pane for Crop & Adjust, rotated-image crop,
+    // extended canvas fill, annotation flatten confirmation with 10-step vector undo, and save path
+    // defaults.
     QWidget* contentPane = nullptr;
+    QWidget* workArea = nullptr;
     QListWidget* filmstrip = nullptr;
     QLabel* metadataBar = nullptr;
     QString currentFilePath;
@@ -409,7 +411,13 @@ struct ImageEditingWindow::Impl {
     AdButton* adjustButton = nullptr;
     AdButton* autoEnhanceButton = nullptr;
     AdButton* grayscaleButton = nullptr;
-    SnowViewCropBarPanel* cropBar = nullptr;
+    SnowViewTaskPanePanel* taskPane = nullptr;
+    QStackedWidget* taskStack = nullptr;
+    QWidget* cropTaskPage = nullptr;
+    QLabel* cropPaneTitle = nullptr;
+    QLabel* cropRatioLabel = nullptr;
+    QLabel* cropAngleLabel = nullptr;
+    QLabel* cropFillLabel = nullptr;
     AdSlider* cropAngleSlider = nullptr;
     AdInputNumber* cropAngleInput = nullptr;
     QLabel* cropSizeLabel = nullptr;
@@ -418,9 +426,28 @@ struct ImageEditingWindow::Impl {
     AdButton* cropCancelButton = nullptr;
     AdButton* cropApplyButton = nullptr;
     enum class CropRatioPreset { Free, Original, Square, Ratio4x3, Ratio16x9, Ratio3x2 };
+    enum class CropFillMode { Auto, White, Transparent };
     CropRatioPreset cropPreset = CropRatioPreset::Free;
+    CropFillMode cropFillMode = CropFillMode::Auto;
     bool cropRatioSwapped = false;
+    bool cropFlattenPending = false;
+    QImage cropFlattenSource;
     std::array<AdButton*, 6> cropPresetButtons{};
+    std::array<AdButton*, 3> cropFillButtons{};
+    QWidget* adjustTaskPage = nullptr;
+    QLabel* adjustPaneTitle = nullptr;
+    std::array<QLabel*, 4> adjustNameLabels{};
+    std::array<QLabel*, 4> adjustValueLabels{};
+    std::array<AdSlider*, 4> adjustSliders{};
+    AdButton* adjustResetButton = nullptr;
+    AdButton* adjustCancelButton = nullptr;
+    AdButton* adjustApplyButton = nullptr;
+    bool adjustActive = false;
+    bool adjustFlattenPending = false;
+    QImage adjustBaseImage;
+    QImage adjustPreviewBase;
+    QTimer adjustPreviewTimer;
+    QPointer<AdModal> flattenConfirmation;
     QPointer<AdMessageHandle> statusMessage;
     WindowShortcutManager shortcuts;
     QVector<WindowShortcutManager::BindingHandle> commandBindings;
@@ -506,6 +533,7 @@ struct ImageEditingWindow::Impl {
         imageToolbar->addSeparator();
         adjustButton =
             imageToolbar->addAction(adqt::icons::antd::outlined::Control(), "snowViewAdjust");
+        adjustButton->setCheckable(true);
         autoEnhanceButton = imageToolbar->addAction(adqt::icons::antd::outlined::Thunderbolt(),
                                                     "snowViewAutoEnhance");
         grayscaleButton =
@@ -516,103 +544,6 @@ struct ImageEditingWindow::Impl {
                                          "imageEditingActualSize");
         imageToolbar->hide();
         overlay->addWidget(imageToolbar, 0, Qt::AlignHCenter);
-
-        // SnowView Rev0.2: Photoshop-style Crop options bar directly under the unified top toolbar.
-        cropBar = new SnowViewCropBarPanel(canvas);
-        cropBar->setObjectName(QStringLiteral("snowViewCropBar"));
-        auto* cropLayout = new QHBoxLayout(cropBar);
-        cropLayout->setContentsMargins(8, 4, 8, 4);
-        cropLayout->setSpacing(4);
-        const std::array<const char*, 6> presetNames = {"snowViewCropFree", "snowViewCropOriginal",
-                                                        "snowViewCrop1x1",  "snowViewCrop4x3",
-                                                        "snowViewCrop16x9", "snowViewCrop3x2"};
-        for (std::size_t i = 0; i < cropPresetButtons.size(); ++i) {
-            auto* btn = new AdButton(cropBar);
-            btn->setObjectName(QString::fromLatin1(presetNames[i]));
-            btn->setSizeClass(AdButton::SizeClass::Small);
-            btn->setButtonStyle(AdButton::ButtonStyle::Text);
-            btn->setCheckable(true);
-            btn->setFocusPolicy(Qt::StrongFocus);
-            cropLayout->addWidget(btn);
-            cropPresetButtons[i] = btn;
-            const auto presetValue = static_cast<CropRatioPreset>(i);
-            QObject::connect(btn, &AdButton::clicked, &q,
-                             [this, presetValue] { setCropRatioPreset(presetValue); });
-        }
-        cropSwapButton = new AdButton(cropBar);
-        cropSwapButton->setObjectName(QStringLiteral("snowViewCropSwap"));
-        cropSwapButton->setIconRef(adqt::icons::antd::outlined::Swap());
-        cropSwapButton->setSizeClass(AdButton::SizeClass::Small);
-        cropSwapButton->setButtonStyle(AdButton::ButtonStyle::Text);
-        cropSwapButton->setFixedSize(26, 26);
-        cropSwapButton->setReferenceIconSize({14, 14});
-        cropSwapButton->setFocusPolicy(Qt::StrongFocus);
-        cropLayout->addWidget(cropSwapButton);
-
-        cropAngleSlider = new AdSlider(cropBar);
-        cropAngleSlider->setObjectName(QStringLiteral("snowViewCropAngleSlider"));
-        cropAngleSlider->setRange(-45, 45);
-        cropAngleSlider->setSingleStep(1);
-        cropAngleSlider->setPageStep(5);
-        cropAngleSlider->setTracking(true);
-        cropAngleSlider->setWheelEnabled(true);
-        cropAngleSlider->setTooltipEnabled(false);
-        cropAngleSlider->setFixedWidth(88);
-        cropAngleSlider->setValue(0);
-        cropLayout->addWidget(cropAngleSlider);
-
-        cropAngleInput = new AdInputNumber(cropBar);
-        cropAngleInput->setObjectName(QStringLiteral("snowViewCropAngleInput"));
-        cropAngleInput->setControlSize(AdInputNumber::ControlSize::Small);
-        cropAngleInput->setDecimals(0);
-        cropAngleInput->setRange(-180, 180);
-        cropAngleInput->setSingleStep(1);
-        cropAngleInput->setStepButtonLayout(AdInputNumber::StepButtonLayout::Compact);
-        cropAngleInput->setSuffixText(QStringLiteral("°"));
-        cropAngleInput->setKeyboardTracking(false);
-        cropAngleInput->setWheelStepEnabled(true);
-        cropAngleInput->setFixedWidth(74);
-        cropAngleInput->setValue(0);
-        cropLayout->addWidget(cropAngleInput);
-
-        cropSizeLabel = new QLabel(cropBar);
-        cropSizeLabel->setObjectName(QStringLiteral("snowViewCropSizeLabel"));
-        cropSizeLabel->setContentsMargins(6, 0, 6, 0);
-        cropLayout->addWidget(cropSizeLabel);
-
-        cropResetButton = new AdButton(cropBar);
-        cropResetButton->setObjectName(QStringLiteral("snowViewCropReset"));
-        cropResetButton->setIconRef(adqt::icons::antd::outlined::Undo());
-        cropResetButton->setSizeClass(AdButton::SizeClass::Small);
-        cropResetButton->setButtonStyle(AdButton::ButtonStyle::Text);
-        cropResetButton->setFixedSize(26, 26);
-        cropResetButton->setReferenceIconSize({14, 14});
-        cropResetButton->setFocusPolicy(Qt::StrongFocus);
-        cropLayout->addWidget(cropResetButton);
-
-        cropCancelButton = new AdButton(cropBar);
-        cropCancelButton->setObjectName(QStringLiteral("snowViewCropCancel"));
-        cropCancelButton->setIconRef(icons::custom::outlined::CancelCrop());
-        cropCancelButton->setSizeClass(AdButton::SizeClass::Small);
-        cropCancelButton->setButtonStyle(AdButton::ButtonStyle::Text);
-        cropCancelButton->setFixedSize(28, 28);
-        cropCancelButton->setReferenceIconSize({16, 16});
-        cropCancelButton->setFocusPolicy(Qt::StrongFocus);
-        cropLayout->addWidget(cropCancelButton);
-
-        cropApplyButton = new AdButton(cropBar);
-        cropApplyButton->setObjectName(QStringLiteral("snowViewCropApply"));
-        cropApplyButton->setIconRef(icons::custom::outlined::ApplyCrop());
-        cropApplyButton->setSizeClass(AdButton::SizeClass::Small);
-        cropApplyButton->setButtonStyle(AdButton::ButtonStyle::Solid);
-        cropApplyButton->setAccentRole(AdButton::AccentRole::Primary);
-        cropApplyButton->setFixedSize(28, 28);
-        cropApplyButton->setReferenceIconSize({16, 16});
-        cropApplyButton->setFocusPolicy(Qt::StrongFocus);
-        cropLayout->addWidget(cropApplyButton);
-
-        cropBar->hide();
-        overlay->addWidget(cropBar, 0, Qt::AlignHCenter);
         overlay->addStretch(1);
         floating->setObjectName(QStringLiteral("imageEditingToolbar"));
         floating->installEventFilter(&q);
@@ -632,14 +563,254 @@ struct ImageEditingWindow::Impl {
         modal->setCloseOnEscape(false);
         modal->setClosePolicy(AdModal::ClosePolicy::Manual);
         modal->setCloseOnMaskClick(false);
-        // SnowView Rev0.1: wrap the preview surface with the folder filmstrip and
-        // the metadata bar below it inside one modal content pane.
+        // SnowView Rev0.3: wrap [surface | docked right taskPane] above filmstrip and metadata bar.
         contentPane = new QWidget;
         contentPane->setObjectName(QStringLiteral("snowViewContentPane"));
         auto* paneLayout = new QVBoxLayout(contentPane);
         paneLayout->setContentsMargins(0, 0, 0, 0);
         paneLayout->setSpacing(0);
-        paneLayout->addWidget(surface, 1);
+        workArea = new QWidget(contentPane);
+        workArea->setObjectName(QStringLiteral("snowViewWorkArea"));
+        auto* workLayout = new QHBoxLayout(workArea);
+        workLayout->setContentsMargins(0, 0, 0, 0);
+        workLayout->setSpacing(0);
+        workLayout->addWidget(surface, 1);
+
+        taskPane = new SnowViewTaskPanePanel(workArea);
+        auto* taskPaneOuter = new QVBoxLayout(taskPane);
+        taskPaneOuter->setContentsMargins(14, 14, 14, 14);
+        taskPaneOuter->setSpacing(10);
+        taskStack = new QStackedWidget(taskPane);
+        taskStack->setObjectName(QStringLiteral("snowViewTaskStack"));
+        taskPaneOuter->addWidget(taskStack, 1);
+
+        // Page 0: Crop & Straighten right Task Pane
+        cropTaskPage = new QWidget(taskStack);
+        cropTaskPage->setObjectName(QStringLiteral("snowViewCropPane"));
+        auto* cropLayout = new QVBoxLayout(cropTaskPage);
+        cropLayout->setContentsMargins(0, 0, 0, 0);
+        cropLayout->setSpacing(12);
+        auto* cropHeader = new QHBoxLayout;
+        cropHeader->setContentsMargins(0, 0, 0, 0);
+        cropPaneTitle = new QLabel(cropTaskPage);
+        cropPaneTitle->setObjectName(QStringLiteral("snowViewCropPaneTitle"));
+        QFont titleFont = cropPaneTitle->font();
+        titleFont.setPixelSize(14);
+        titleFont.setWeight(QFont::DemiBold);
+        cropPaneTitle->setFont(titleFont);
+        cropSizeLabel = new QLabel(cropTaskPage);
+        cropSizeLabel->setObjectName(QStringLiteral("snowViewCropSizeLabel"));
+        cropSizeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        cropHeader->addWidget(cropPaneTitle, 1);
+        cropHeader->addWidget(cropSizeLabel, 0);
+        cropLayout->addLayout(cropHeader);
+
+        cropRatioLabel = new QLabel(cropTaskPage);
+        cropRatioLabel->setObjectName(QStringLiteral("snowViewCropRatioLabel"));
+        cropLayout->addWidget(cropRatioLabel);
+        auto* ratioGrid = new QGridLayout;
+        ratioGrid->setContentsMargins(0, 0, 0, 0);
+        ratioGrid->setSpacing(6);
+        const std::array<const char*, 6> presetNames = {"snowViewCropFree", "snowViewCropOriginal",
+                                                        "snowViewCrop1x1",  "snowViewCrop4x3",
+                                                        "snowViewCrop16x9", "snowViewCrop3x2"};
+        for (std::size_t i = 0; i < cropPresetButtons.size(); ++i) {
+            auto* btn = new AdButton(cropTaskPage);
+            btn->setObjectName(QString::fromLatin1(presetNames[i]));
+            btn->setSizeClass(AdButton::SizeClass::Small);
+            btn->setButtonStyle(AdButton::ButtonStyle::Text);
+            btn->setCheckable(true);
+            btn->setFocusPolicy(Qt::StrongFocus);
+            ratioGrid->addWidget(btn, static_cast<int>(i / 3), static_cast<int>(i % 3));
+            cropPresetButtons[i] = btn;
+            const auto presetValue = static_cast<CropRatioPreset>(i);
+            QObject::connect(btn, &AdButton::clicked, &q,
+                             [this, presetValue] { setCropRatioPreset(presetValue); });
+        }
+        cropLayout->addLayout(ratioGrid);
+
+        cropSwapButton = new AdButton(cropTaskPage);
+        cropSwapButton->setObjectName(QStringLiteral("snowViewCropSwap"));
+        cropSwapButton->setIconRef(adqt::icons::antd::outlined::Swap());
+        cropSwapButton->setSizeClass(AdButton::SizeClass::Small);
+        cropSwapButton->setButtonStyle(AdButton::ButtonStyle::Outline);
+        cropSwapButton->setReferenceIconSize({14, 14});
+        cropSwapButton->setFocusPolicy(Qt::StrongFocus);
+        cropLayout->addWidget(cropSwapButton);
+
+        auto* angleRow = new QHBoxLayout;
+        angleRow->setContentsMargins(0, 0, 0, 0);
+        cropAngleLabel = new QLabel(cropTaskPage);
+        cropAngleLabel->setObjectName(QStringLiteral("snowViewCropAngleLabel"));
+        cropAngleInput = new AdInputNumber(cropTaskPage);
+        cropAngleInput->setObjectName(QStringLiteral("snowViewCropAngleInput"));
+        cropAngleInput->setControlSize(AdInputNumber::ControlSize::Small);
+        cropAngleInput->setDecimals(0);
+        cropAngleInput->setRange(-180, 180);
+        cropAngleInput->setSingleStep(1);
+        cropAngleInput->setStepButtonLayout(AdInputNumber::StepButtonLayout::Compact);
+        cropAngleInput->setSuffixText(QStringLiteral("°"));
+        cropAngleInput->setKeyboardTracking(false);
+        cropAngleInput->setWheelStepEnabled(true);
+        cropAngleInput->setFixedWidth(84);
+        cropAngleInput->setValue(0);
+        angleRow->addWidget(cropAngleLabel, 1);
+        angleRow->addWidget(cropAngleInput, 0);
+        cropLayout->addLayout(angleRow);
+
+        cropAngleSlider = new AdSlider(cropTaskPage);
+        cropAngleSlider->setObjectName(QStringLiteral("snowViewCropAngleSlider"));
+        cropAngleSlider->setRange(-45, 45);
+        cropAngleSlider->setSingleStep(1);
+        cropAngleSlider->setPageStep(5);
+        cropAngleSlider->setTracking(true);
+        cropAngleSlider->setWheelEnabled(true);
+        cropAngleSlider->setTooltipEnabled(false);
+        cropAngleSlider->setValue(0);
+        cropLayout->addWidget(cropAngleSlider);
+
+        cropFillLabel = new QLabel(cropTaskPage);
+        cropFillLabel->setObjectName(QStringLiteral("snowViewCropFillLabel"));
+        cropLayout->addWidget(cropFillLabel);
+        auto* fillRow = new QHBoxLayout;
+        fillRow->setContentsMargins(0, 0, 0, 0);
+        fillRow->setSpacing(6);
+        const std::array<const char*, 3> fillNames = {
+            "snowViewCropFillAuto", "snowViewCropFillWhite", "snowViewCropFillTransparent"};
+        for (std::size_t i = 0; i < cropFillButtons.size(); ++i) {
+            auto* btn = new AdButton(cropTaskPage);
+            btn->setObjectName(QString::fromLatin1(fillNames[i]));
+            btn->setSizeClass(AdButton::SizeClass::Small);
+            btn->setButtonStyle(AdButton::ButtonStyle::Text);
+            btn->setCheckable(true);
+            btn->setFocusPolicy(Qt::StrongFocus);
+            fillRow->addWidget(btn, 1);
+            cropFillButtons[i] = btn;
+            const auto modeValue = static_cast<CropFillMode>(i);
+            QObject::connect(btn, &AdButton::clicked, &q, [this, modeValue] {
+                cropFillMode = modeValue;
+                syncCropFillUi();
+            });
+        }
+        cropLayout->addLayout(fillRow);
+        cropLayout->addStretch(1);
+
+        auto* cropFooter = new QHBoxLayout;
+        cropFooter->setContentsMargins(0, 0, 0, 0);
+        cropFooter->setSpacing(6);
+        cropResetButton = new AdButton(cropTaskPage);
+        cropResetButton->setObjectName(QStringLiteral("snowViewCropReset"));
+        cropResetButton->setIconRef(adqt::icons::antd::outlined::Undo());
+        cropResetButton->setSizeClass(AdButton::SizeClass::Small);
+        cropResetButton->setButtonStyle(AdButton::ButtonStyle::Text);
+        cropResetButton->setReferenceIconSize({14, 14});
+        cropResetButton->setFocusPolicy(Qt::StrongFocus);
+        cropCancelButton = new AdButton(cropTaskPage);
+        cropCancelButton->setObjectName(QStringLiteral("snowViewCropCancel"));
+        cropCancelButton->setSizeClass(AdButton::SizeClass::Small);
+        cropCancelButton->setButtonStyle(AdButton::ButtonStyle::Text);
+        cropCancelButton->setFocusPolicy(Qt::StrongFocus);
+        cropApplyButton = new AdButton(cropTaskPage);
+        cropApplyButton->setObjectName(QStringLiteral("snowViewCropApply"));
+        cropApplyButton->setSizeClass(AdButton::SizeClass::Small);
+        cropApplyButton->setButtonStyle(AdButton::ButtonStyle::Solid);
+        cropApplyButton->setAccentRole(AdButton::AccentRole::Primary);
+        cropApplyButton->setFocusPolicy(Qt::StrongFocus);
+        cropFooter->addWidget(cropResetButton);
+        cropFooter->addStretch(1);
+        cropFooter->addWidget(cropCancelButton);
+        cropFooter->addWidget(cropApplyButton);
+        cropLayout->addLayout(cropFooter);
+        taskStack->addWidget(cropTaskPage);
+
+        // Page 1: Live Adjust image right Task Pane
+        adjustTaskPage = new QWidget(taskStack);
+        adjustTaskPage->setObjectName(QStringLiteral("snowViewAdjustPane"));
+        auto* adjustLayout = new QVBoxLayout(adjustTaskPage);
+        adjustLayout->setContentsMargins(0, 0, 0, 0);
+        adjustLayout->setSpacing(12);
+        adjustPaneTitle = new QLabel(adjustTaskPage);
+        adjustPaneTitle->setObjectName(QStringLiteral("snowViewAdjustPaneTitle"));
+        adjustPaneTitle->setFont(titleFont);
+        adjustLayout->addWidget(adjustPaneTitle);
+
+        const std::array<const char*, 4> sliderNames = {
+            "snowViewAdjustBrightnessSlider", "snowViewAdjustContrastSlider",
+            "snowViewAdjustSaturationSlider", "snowViewAdjustSharpenSlider"};
+        const std::array<const char*, 4> valueNames = {
+            "snowViewAdjustBrightnessValue", "snowViewAdjustContrastValue",
+            "snowViewAdjustSaturationValue", "snowViewAdjustSharpenValue"};
+        for (int i = 0; i < 4; ++i) {
+            auto* rowHeader = new QHBoxLayout;
+            rowHeader->setContentsMargins(0, 0, 0, 0);
+            auto* caption = new QLabel(adjustTaskPage);
+            auto* valueLabel = new QLabel(QStringLiteral("0"), adjustTaskPage);
+            valueLabel->setObjectName(QString::fromLatin1(valueNames[i]));
+            valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            rowHeader->addWidget(caption, 1);
+            rowHeader->addWidget(valueLabel, 0);
+            adjustLayout->addLayout(rowHeader);
+
+            auto* slider = new AdSlider(adjustTaskPage);
+            slider->setObjectName(QString::fromLatin1(sliderNames[i]));
+            slider->setRange(i == 3 ? 0 : -100, 100);
+            slider->setSingleStep(1);
+            slider->setPageStep(10);
+            slider->setTracking(true);
+            slider->setWheelEnabled(true);
+            slider->setTooltipEnabled(false);
+            slider->setValue(0);
+            adjustLayout->addWidget(slider);
+            adjustNameLabels[static_cast<std::size_t>(i)] = caption;
+            adjustValueLabels[static_cast<std::size_t>(i)] = valueLabel;
+            adjustSliders[static_cast<std::size_t>(i)] = slider;
+            QObject::connect(slider, &AdSlider::valueChanged, &q, [this, i](double val) {
+                const int rounded = qRound(val);
+                if (auto* lbl = adjustValueLabels[static_cast<std::size_t>(i)]) {
+                    lbl->setText(i != 3 && rounded > 0 ? QStringLiteral("+%1").arg(rounded)
+                                                       : QString::number(rounded));
+                }
+                scheduleAdjustPreview();
+            });
+        }
+        adjustLayout->addStretch(1);
+
+        auto* adjustFooter = new QHBoxLayout;
+        adjustFooter->setContentsMargins(0, 0, 0, 0);
+        adjustFooter->setSpacing(6);
+        adjustResetButton = new AdButton(adjustTaskPage);
+        adjustResetButton->setObjectName(QStringLiteral("snowViewAdjustReset"));
+        adjustResetButton->setIconRef(adqt::icons::antd::outlined::Undo());
+        adjustResetButton->setSizeClass(AdButton::SizeClass::Small);
+        adjustResetButton->setButtonStyle(AdButton::ButtonStyle::Text);
+        adjustResetButton->setReferenceIconSize({14, 14});
+        adjustResetButton->setFocusPolicy(Qt::StrongFocus);
+        adjustCancelButton = new AdButton(adjustTaskPage);
+        adjustCancelButton->setObjectName(QStringLiteral("snowViewAdjustCancel"));
+        adjustCancelButton->setSizeClass(AdButton::SizeClass::Small);
+        adjustCancelButton->setButtonStyle(AdButton::ButtonStyle::Text);
+        adjustCancelButton->setFocusPolicy(Qt::StrongFocus);
+        adjustApplyButton = new AdButton(adjustTaskPage);
+        adjustApplyButton->setObjectName(QStringLiteral("snowViewAdjustApply"));
+        adjustApplyButton->setSizeClass(AdButton::SizeClass::Small);
+        adjustApplyButton->setButtonStyle(AdButton::ButtonStyle::Solid);
+        adjustApplyButton->setAccentRole(AdButton::AccentRole::Primary);
+        adjustApplyButton->setFocusPolicy(Qt::StrongFocus);
+        adjustFooter->addWidget(adjustResetButton);
+        adjustFooter->addStretch(1);
+        adjustFooter->addWidget(adjustCancelButton);
+        adjustFooter->addWidget(adjustApplyButton);
+        adjustLayout->addLayout(adjustFooter);
+        taskStack->addWidget(adjustTaskPage);
+
+        taskPane->hide();
+        workLayout->addWidget(taskPane, 0);
+        paneLayout->addWidget(workArea, 1);
+
+        adjustPreviewTimer.setSingleShot(true);
+        adjustPreviewTimer.setInterval(16);
+        QObject::connect(&adjustPreviewTimer, &QTimer::timeout, &q,
+                         [this] { applyAdjustPreviewNow(); });
         filmstrip = new QListWidget(contentPane);
         filmstrip->setObjectName(QStringLiteral("snowViewFilmstrip"));
         filmstrip->setViewMode(QListView::IconMode);
@@ -717,8 +888,10 @@ struct ImageEditingWindow::Impl {
         });
         QObject::connect(cropResetButton, &AdButton::clicked, &q, [this] {
             cropPreset = CropRatioPreset::Free;
+            cropFillMode = CropFillMode::Auto;
             cropRatioSwapped = false;
             canvas->setCropAngleDegrees(0);
+            syncCropFillUi();
             applyCropRatioPreset();
         });
         QObject::connect(cropAngleSlider, &AdSlider::valueChanged, &q,
@@ -728,7 +901,13 @@ struct ImageEditingWindow::Impl {
         QObject::connect(cropCancelButton, &AdButton::clicked, &q,
                          [this] { canvas->cancelCropRect(); });
         QObject::connect(cropApplyButton, &AdButton::clicked, &q, [this] { canvas->commitCrop(); });
-        QObject::connect(adjustButton, &AdButton::clicked, &q, [this] { showAdjustDialog(); });
+        QObject::connect(adjustButton, &AdButton::clicked, &q, [this] { toggleAdjustMode(); });
+        QObject::connect(adjustResetButton, &AdButton::clicked, &q,
+                         [this] { resetAdjustSliders(); });
+        QObject::connect(adjustCancelButton, &AdButton::clicked, &q,
+                         [this] { exitAdjustMode(false); });
+        QObject::connect(adjustApplyButton, &AdButton::clicked, &q,
+                         [this] { exitAdjustMode(true); });
         QObject::connect(autoEnhanceButton, &AdButton::clicked, &q, [this] { autoEnhanceImage(); });
         QObject::connect(grayscaleButton, &AdButton::clicked, &q, [this] { grayscaleImage(); });
         canvas->cropRectChanged = [this](const QRect& rect, int angle) {
@@ -900,7 +1079,7 @@ struct ImageEditingWindow::Impl {
                            (receiver->window() == editorWindow || receiver->window() == floating) &&
                            !WindowShortcutManager::focusAcceptsTextInput(context.focusWidget) &&
                            !canvas->hasActiveTextEditing() && !shortcuts.inputSuspended() &&
-                           !confirmation && canRun();
+                           !confirmation && !flattenConfirmation && canRun();
                 };
                 binding.activate = [run = std::move(run)](const auto&) { return run(); };
                 static_cast<void>(shortcuts.addBinding(&q, std::move(binding)));
@@ -928,9 +1107,24 @@ struct ImageEditingWindow::Impl {
                 return true;
             });
         addCropShortcut(
+            "snowViewAdjustCommit",
+            {QKeyCombination(Qt::Key_Return), QKeyCombination(Qt::Key_Enter)}, Qt::KeypadModifier,
+            [this] { return adjustActive; },
+            [this] {
+                exitAdjustMode(true);
+                return true;
+            });
+        addCropShortcut(
+            "snowViewAdjustCancel", {QKeyCombination(Qt::Key_Escape)}, Qt::NoModifier,
+            [this] { return adjustActive; },
+            [this] {
+                exitAdjustMode(false);
+                return true;
+            });
+        addCropShortcut(
             "snowViewFilmstripPrev", {QKeyCombination(Qt::Key_Left)}, Qt::NoModifier,
             [this] {
-                return canvas->mode() != ImageEditingCanvas::Mode::CropRect &&
+                return canvas->mode() != ImageEditingCanvas::Mode::CropRect && !adjustActive &&
                        !document.image().isNull() && !loading && !cropBusy && filmstrip &&
                        filmstrip->count() > 1 && !(colorSampling && colorSampling->active());
             },
@@ -941,7 +1135,7 @@ struct ImageEditingWindow::Impl {
         addCropShortcut(
             "snowViewFilmstripNext", {QKeyCombination(Qt::Key_Right)}, Qt::NoModifier,
             [this] {
-                return canvas->mode() != ImageEditingCanvas::Mode::CropRect &&
+                return canvas->mode() != ImageEditingCanvas::Mode::CropRect && !adjustActive &&
                        !document.image().isNull() && !loading && !cropBusy && filmstrip &&
                        filmstrip->count() > 1 && !(colorSampling && colorSampling->active());
             },
@@ -953,8 +1147,8 @@ struct ImageEditingWindow::Impl {
     }
     bool canPaste() const {
         return modal->isOpen() && !closing && !loading && !choosingFiles && !cropBusy &&
-               !exporter.busy() && !confirmation && !shortcuts.inputSuspended() &&
-               !(colorSampling && colorSampling->active());
+               !exporter.busy() && !confirmation && !flattenConfirmation &&
+               !shortcuts.inputSuspended() && !(colorSampling && colorSampling->active());
     }
     bool canImport() const {
         return !closing && !loading && !choosingFiles && document.image().isNull();
@@ -1180,7 +1374,15 @@ struct ImageEditingWindow::Impl {
         grayscaleButton->setToolTip(
             QCoreApplication::translate("ImageEditingWindow", "Convert to grayscale"));
         grayscaleButton->setAccessibleName(grayscaleButton->toolTip());
-        if (cropPresetButtons[0]) {
+        if (cropTaskPage) {
+            cropPaneTitle->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Crop & Straighten"));
+            cropRatioLabel->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Aspect ratio"));
+            cropAngleLabel->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Angle (1° step)"));
+            cropFillLabel->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Extended canvas fill"));
             cropPresetButtons[0]->setText(
                 QCoreApplication::translate("ImageEditingWindow", "Free"));
             cropPresetButtons[1]->setText(
@@ -1189,24 +1391,55 @@ struct ImageEditingWindow::Impl {
             cropPresetButtons[3]->setText(QStringLiteral("4:3"));
             cropPresetButtons[4]->setText(QStringLiteral("16:9"));
             cropPresetButtons[5]->setText(QStringLiteral("3:2"));
+            cropSwapButton->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Swap ratio"));
             cropSwapButton->setToolTip(
                 QCoreApplication::translate("ImageEditingWindow", "Swap width and height ratio"));
             cropSwapButton->setAccessibleName(cropSwapButton->toolTip());
             cropAngleSlider->setToolTip(QCoreApplication::translate(
-                "ImageEditingWindow", "Straighten or rotate crop frame (-45° to +45°, 1° step)"));
+                "ImageEditingWindow", "Rotate image under crop frame (-45° to +45°, 1° step)"));
             cropAngleSlider->setAccessibleName(cropAngleSlider->toolTip());
             cropAngleInput->setToolTip(QCoreApplication::translate(
-                "ImageEditingWindow", "Crop rotation angle (-180° to +180°, 1° step)"));
+                "ImageEditingWindow", "Image rotation angle (-180° to +180°, 1° step)"));
             cropAngleInput->setAccessibleName(cropAngleInput->toolTip());
+            cropFillButtons[0]->setText(QCoreApplication::translate("ImageEditingWindow", "Auto"));
+            cropFillButtons[1]->setText(QCoreApplication::translate("ImageEditingWindow", "White"));
+            cropFillButtons[2]->setText(QCoreApplication::translate("ImageEditingWindow", "Empty"));
+            cropFillButtons[0]->setToolTip(QCoreApplication::translate(
+                "ImageEditingWindow", "White for JPEG/BMP, transparent for PNG"));
+            cropFillButtons[1]->setToolTip(
+                QCoreApplication::translate("ImageEditingWindow", "Fill extended area with white"));
+            cropFillButtons[2]->setToolTip(QCoreApplication::translate(
+                "ImageEditingWindow", "Leave extended area transparent"));
+            cropResetButton->setText(QCoreApplication::translate("ImageEditingWindow", "Reset"));
             cropResetButton->setToolTip(
                 QCoreApplication::translate("ImageEditingWindow", "Reset crop box"));
-            cropResetButton->setAccessibleName(cropResetButton->toolTip());
+            cropCancelButton->setText(QCoreApplication::translate("ImageEditingWindow", "Cancel"));
             cropCancelButton->setToolTip(
                 QCoreApplication::translate("ImageEditingWindow", "Cancel crop (Esc)"));
-            cropCancelButton->setAccessibleName(cropCancelButton->toolTip());
+            cropApplyButton->setText(QCoreApplication::translate("ImageEditingWindow", "Apply"));
             cropApplyButton->setToolTip(
                 QCoreApplication::translate("ImageEditingWindow", "Apply crop (Enter)"));
-            cropApplyButton->setAccessibleName(cropApplyButton->toolTip());
+        }
+        if (adjustTaskPage) {
+            adjustPaneTitle->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Adjust image"));
+            adjustNameLabels[0]->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Brightness"));
+            adjustNameLabels[1]->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Contrast"));
+            adjustNameLabels[2]->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Saturation"));
+            adjustNameLabels[3]->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Sharpen"));
+            adjustResetButton->setText(QCoreApplication::translate("ImageEditingWindow", "Reset"));
+            adjustCancelButton->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Cancel"));
+            adjustCancelButton->setToolTip(
+                QCoreApplication::translate("ImageEditingWindow", "Cancel adjust (Esc)"));
+            adjustApplyButton->setText(QCoreApplication::translate("ImageEditingWindow", "Apply"));
+            adjustApplyButton->setToolTip(
+                QCoreApplication::translate("ImageEditingWindow", "Apply adjust (Enter)"));
         }
         emptyState->title->setText(ImageEditingWindow::tr("Add images to start image editing"));
         emptyState->description->setText(
@@ -1229,6 +1462,8 @@ struct ImageEditingWindow::Impl {
             sourceError(errorSource);
         if (confirmation)
             translateConfirmation();
+        if (flattenConfirmation)
+            translateFlattenConfirmation();
         placeToolbar();
     }
     void message(QString text, AdMessage::Type type = AdMessage::Type::Error) {
@@ -1405,7 +1640,7 @@ struct ImageEditingWindow::Impl {
     void syncPalette() {
         if (session && session->active())
             return;
-        palette->setHistoryState({document.runtime().canUndo(), document.runtime().canRedo()});
+        palette->setHistoryState({document.canUndo(), document.canRedo()});
         palette->setStyleToolbarState(canvas->canvasStyleToolbarState());
         palette->setWatermarkConfig(canvas->canvasWatermarkConfig());
         palette->setSpotlightConfig(canvas->canvasSpotlightConfig());
@@ -1413,6 +1648,14 @@ struct ImageEditingWindow::Impl {
     void drawing(ImageEditingCanvas::Mode mode) {
         if (loading || cropBusy || document.image().isNull())
             return;
+        if (adjustActive)
+            exitAdjustMode(false);
+        if (mode != ImageEditingCanvas::Mode::CropRect && cropFlattenPending) {
+            cropFlattenPending = false;
+            cropFlattenSource = {};
+            document.clearPreviewImage();
+            canvas->setCanvasContentVisible(true);
+        }
         cancelColorSampling();
         if (session)
             session->deactivate();
@@ -1421,8 +1664,10 @@ struct ImageEditingWindow::Impl {
         static_cast<void>(canvas->resetEditingStatePreservingTool());
         if (mode == ImageEditingCanvas::Mode::CropRect) {
             cropPreset = CropRatioPreset::Free;
+            cropFillMode = CropFillMode::Auto;
             cropRatioSwapped = false;
             canvas->setCropAspectRatio(std::nullopt);
+            syncCropFillUi();
         }
         canvas->setMode(mode);
         const bool cropRectActive = canvas->mode() == ImageEditingCanvas::Mode::CropRect;
@@ -1438,7 +1683,52 @@ struct ImageEditingWindow::Impl {
         canvas->setFocus();
         syncAvailability();
         syncPalette();
+        if (workArea && workArea->layout())
+            workArea->layout()->activate();
         placeToolbar();
+    }
+    [[nodiscard]] QColor resolvedCropExtensionFillColor() const {
+        if (cropFillMode == CropFillMode::White)
+            return Qt::white;
+        if (cropFillMode == CropFillMode::Transparent)
+            return Qt::transparent;
+        if (!currentFilePath.isEmpty()) {
+            const auto fmt = snowViewFormatForPath(currentFilePath);
+            if (fmt == snow::image::Format::jpeg || fmt == snow::image::Format::bmp)
+                return Qt::white;
+            if (fmt != snow::image::Format::unknown)
+                return Qt::transparent;
+        }
+        const QImage& src = (cropFlattenPending && !cropFlattenSource.isNull()) ? cropFlattenSource
+                                                                                : document.image();
+        return (!src.isNull() && !src.hasAlphaChannel()) ? Qt::white : Qt::transparent;
+    }
+    void syncCropFillUi() {
+        for (std::size_t i = 0; i < cropFillButtons.size(); ++i) {
+            if (!cropFillButtons[i])
+                continue;
+            const bool selected = static_cast<CropFillMode>(i) == cropFillMode;
+            cropFillButtons[i]->setChecked(selected);
+            cropFillButtons[i]->setButtonStyle(selected ? AdButton::ButtonStyle::Solid
+                                                        : AdButton::ButtonStyle::Text);
+            cropFillButtons[i]->setAccentRole(selected ? AdButton::AccentRole::Primary
+                                                       : AdButton::AccentRole::Neutral);
+        }
+        canvas->setCropExtensionFillColor(resolvedCropExtensionFillColor());
+    }
+    void syncTaskPaneVisibility() {
+        const bool showCrop = canvas->mode() == ImageEditingCanvas::Mode::CropRect;
+        const bool showAdjust = adjustActive && !showCrop;
+        if (showCrop && taskStack && cropTaskPage)
+            taskStack->setCurrentWidget(cropTaskPage);
+        else if (showAdjust && taskStack && adjustTaskPage)
+            taskStack->setCurrentWidget(adjustTaskPage);
+        if (taskPane) {
+            taskPane->setVisible(showCrop || showAdjust);
+            if (workArea && workArea->layout())
+                workArea->layout()->activate();
+        }
+        QTimer::singleShot(0, &q, [this] { placeToolbar(); });
     }
     void syncCropUiState(bool active) {
         if (cropButton) {
@@ -1448,13 +1738,9 @@ struct ImageEditingWindow::Impl {
             cropButton->setAccentRole(active ? AdButton::AccentRole::Primary
                                              : AdButton::AccentRole::Neutral);
         }
-        if (cropBar) {
-            cropBar->setVisible(active);
-            if (active) {
-                cropBar->raise();
-                updateCropReadout(canvas->cropPixelRect(), canvas->cropAngleDegrees());
-            }
-        }
+        syncTaskPaneVisibility();
+        if (active)
+            updateCropReadout(canvas->cropPixelRect(), canvas->cropAngleDegrees());
         for (std::size_t i = 0; i < cropPresetButtons.size(); ++i) {
             if (!cropPresetButtons[i])
                 continue;
@@ -1476,9 +1762,19 @@ struct ImageEditingWindow::Impl {
             drawing(ImageEditingCanvas::Mode::Pan);
             return;
         }
-        if (baseImageForTransform().isNull())
-            return;
-        drawing(ImageEditingCanvas::Mode::CropRect);
+        confirmAnnotationFlattenThen([this](bool flatten) {
+            cropFlattenPending = flatten;
+            cropFlattenSource = flatten ? document.renderFlattenedBaseImage() : QImage();
+            if (flatten) {
+                if (cropFlattenSource.isNull()) {
+                    cropFlattenPending = false;
+                    return;
+                }
+                document.setPreviewImage(cropFlattenSource);
+                canvas->setCanvasContentVisible(false);
+            }
+            drawing(ImageEditingCanvas::Mode::CropRect);
+        });
     }
     void setCropRatioPreset(CropRatioPreset preset) {
         if (preset == cropPreset && preset != CropRatioPreset::Free)
@@ -1537,53 +1833,69 @@ struct ImageEditingWindow::Impl {
     void applyCropRect(const QRectF& pixelBox, int angleDegrees) {
         if (cropBusy || loading || closing)
             return;
-        const QImage base = baseImageForTransform();
+        const bool flatten = cropFlattenPending;
+        const QImage base =
+            flatten && !cropFlattenSource.isNull() ? cropFlattenSource : document.image();
+        const QColor fillColor = resolvedCropExtensionFillColor();
+        cropFlattenPending = false;
+        cropFlattenSource = {};
+        document.clearPreviewImage();
+        canvas->setCanvasContentVisible(true);
         drawing(ImageEditingCanvas::Mode::Pan);
         if (base.isNull() || !pixelBox.isValid() || pixelBox.isEmpty())
             return;
-        if (angleDegrees == 0) {
-            const QRect rounded(qRound(pixelBox.left()), qRound(pixelBox.top()),
-                                std::max(1, qRound(pixelBox.width())),
-                                std::max(1, qRound(pixelBox.height())));
-            const QRect bounded = rounded.intersected(base.rect());
-            if (bounded.isEmpty() || bounded == base.rect())
-                return;
-            const QImage cropped = base.copy(bounded);
-            if (!cropped.isNull()) {
-                document.applyBaseImage(cropped);
-                canvas->fit();
-            }
+        const QRect rounded(qRound(pixelBox.left()), qRound(pixelBox.top()),
+                            std::clamp(qRound(pixelBox.width()), 1, 16384),
+                            std::clamp(qRound(pixelBox.height()), 1, 16384));
+        if (angleDegrees == 0 && rounded == base.rect() && !flatten)
             return;
-        }
-        const int outW = std::max(1, qRound(pixelBox.width()));
-        const int outH = std::max(1, qRound(pixelBox.height()));
-        const QImage::Format targetFormat =
-            base.hasAlphaChannel() ? QImage::Format_ARGB32_Premultiplied : QImage::Format_RGB32;
-        QImage cropped(outW, outH, targetFormat);
-        cropped.setDevicePixelRatio(base.devicePixelRatio());
-        cropped.setColorSpace(base.colorSpace());
-        cropped.fill(base.hasAlphaChannel() ? Qt::transparent : Qt::black);
-        {
-            QPainter painter(&cropped);
-            painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-            painter.translate(outW * 0.5, outH * 0.5);
-            painter.rotate(-static_cast<qreal>(angleDegrees));
-            painter.translate(-pixelBox.center());
-            painter.drawImage(QPointF(0.0, 0.0), base);
-        }
-        if (base.format() != targetFormat && base.format() != QImage::Format_Invalid &&
-            base.format() != QImage::Format_Indexed8 && base.format() != QImage::Format_Mono &&
-            base.format() != QImage::Format_MonoLSB) {
-            cropped = cropped.convertToFormat(base.format());
+        const int outW = rounded.width();
+        const int outH = rounded.height();
+        const bool wantTransparent = fillColor.alpha() == 0;
+        QImage cropped;
+        if (angleDegrees == 0 && base.rect().contains(rounded) &&
+            (wantTransparent || !base.hasAlphaChannel())) {
+            // Preserve bit-exact pixels and native format for axis-aligned sub-crops.
+            cropped = base.copy(rounded);
+        } else {
+            const QImage::Format targetFormat =
+                wantTransparent ? QImage::Format_ARGB32_Premultiplied : QImage::Format_RGB32;
+            cropped = QImage(outW, outH, targetFormat);
+            cropped.setDevicePixelRatio(base.devicePixelRatio());
+            cropped.setColorSpace(base.colorSpace());
+            cropped.fill(wantTransparent ? Qt::transparent : fillColor);
+            {
+                QPainter painter(&cropped);
+                painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                painter.translate(-QPointF(rounded.topLeft()));
+                if (angleDegrees != 0) {
+                    const QPointF imgCenter(base.width() * 0.5, base.height() * 0.5);
+                    painter.translate(imgCenter);
+                    painter.rotate(static_cast<qreal>(angleDegrees));
+                    painter.translate(-imgCenter);
+                }
+                painter.drawImage(QPointF(0.0, 0.0), base);
+            }
+            if (!wantTransparent && base.format() != targetFormat &&
+                base.format() != QImage::Format_Invalid &&
+                base.format() != QImage::Format_Indexed8 && base.format() != QImage::Format_Mono &&
+                base.format() != QImage::Format_MonoLSB && !base.hasAlphaChannel()) {
+                cropped = cropped.convertToFormat(base.format());
+            }
         }
         if (!cropped.isNull()) {
-            document.applyBaseImage(cropped);
+            if (flatten)
+                document.applyFlattenedBaseImage(std::move(cropped));
+            else
+                document.applyBaseImage(std::move(cropped));
             canvas->fit();
         }
     }
     void setCropBusy(bool busy) {
         cropBusy = busy;
         canvas->setEnabled(!busy);
+        if (taskPane)
+            taskPane->setEnabled(!busy);
         floating->setEnabled(!busy && !loading);
     }
     void crop(ImageEditingDocument::CropAxis axis, int first, int last) {
@@ -1804,114 +2116,203 @@ struct ImageEditingWindow::Impl {
                 syncFilmstripSelection();
         });
     }
-    // SnowView Rev0.1: transforms act on the base raster. With annotations present
-    // there is no scene-wide transform in the canvas runtime, so ask the user to
-    // remove them (or work on an exported copy) instead of silently misaligning them.
-    QImage baseImageForTransform() {
-        if (document.image().isNull() || loading || cropBusy)
-            return {};
-        if (document.runtime().hasDocumentContent()) {
-            message(QCoreApplication::translate(
-                "ImageEditingWindow",
-                "Remove the annotations before transforming the image, or export the "
-                "flattened image and open it again"));
-            return {};
+    // SnowView Rev0.3: ask confirmation before flattening annotations when running base-raster
+    // transforms/crop/adjust, keeping the pre-flatten vector layer undoable for 10 commands.
+    void translateFlattenConfirmation() {
+        if (!flattenConfirmation)
+            return;
+        flattenConfirmation->setWindowTitle(
+            QCoreApplication::translate("ImageEditingWindow", "Flatten annotations?"));
+        flattenConfirmation->setText(QCoreApplication::translate(
+            "ImageEditingWindow",
+            "This action applies to the flattened image. Existing annotations will be merged into "
+            "the image and can still be undone back to editable layers within the next 10 "
+            "commands."));
+        flattenConfirmation->setAcceptText(
+            QCoreApplication::translate("ImageEditingWindow", "Flatten and continue"));
+        flattenConfirmation->setRejectText(
+            QCoreApplication::translate("ImageEditingWindow", "Cancel"));
+    }
+    void confirmAnnotationFlattenThen(std::function<void(bool flatten)> action) {
+        if (document.image().isNull() || loading || cropBusy || closing)
+            return;
+        if (!document.runtime().hasDocumentContent()) {
+            action(false);
+            return;
         }
-        return document.image();
+        if (confirmation || flattenConfirmation)
+            return;
+        auto* dialog = modal_window::createConfirmation(&q, surface->window());
+        dialog->setObjectName(QStringLiteral("snowViewFlattenConfirmModal"));
+        flattenConfirmation = dialog;
+        translateFlattenConfirmation();
+        QObject::connect(dialog, &AdModal::finished, &q,
+                         [this, action = std::move(action)](auto code) {
+                             flattenConfirmation = nullptr;
+                             if (!closing && code == AdModal::DialogCode::Accepted)
+                                 action(true);
+                         });
+        dialog->setOpen(true);
+        if (dialog->acceptButton()) {
+            dialog->acceptButton()->setAutoDefault(true);
+            dialog->acceptButton()->setDefault(true);
+        }
+        if (dialog->rejectButton()) {
+            dialog->rejectButton()->setAutoDefault(false);
+            dialog->rejectButton()->setDefault(false);
+        }
+    }
+    void runBaseTransform(std::function<QImage(const QImage&)> transform) {
+        confirmAnnotationFlattenThen([this, transform = std::move(transform)](bool flatten) {
+            const QImage base = flatten ? document.renderFlattenedBaseImage() : document.image();
+            if (base.isNull())
+                return;
+            QImage next = transform(base);
+            if (next.isNull())
+                return;
+            if (flatten)
+                document.applyFlattenedBaseImage(std::move(next));
+            else
+                document.applyBaseImage(std::move(next));
+        });
     }
     void flipImage(bool horizontal) {
-        const QImage base = baseImageForTransform();
-        if (!base.isNull())
+        runBaseTransform([horizontal](const QImage& base) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
-            document.applyBaseImage(base.flipped(horizontal ? Qt::Horizontal : Qt::Vertical));
+            return base.flipped(horizontal ? Qt::Horizontal : Qt::Vertical);
 #else
-            document.applyBaseImage(base.mirrored(horizontal, !horizontal));
+            return base.mirrored(horizontal, !horizontal);
 #endif
+        });
     }
     void rotateImage(bool clockwise) {
-        const QImage base = baseImageForTransform();
-        if (base.isNull())
-            return;
-        QTransform transform;
-        transform.rotate(clockwise ? 90 : -90);
-        document.applyBaseImage(base.transformed(transform));
+        runBaseTransform([clockwise](const QImage& base) {
+            QTransform transform;
+            transform.rotate(clockwise ? 90 : -90);
+            return base.transformed(transform);
+        });
     }
     void grayscaleImage() {
-        const QImage base = baseImageForTransform();
-        if (!base.isNull())
-            document.applyBaseImage(base.convertToFormat(QImage::Format_Grayscale8)
-                                        .convertToFormat(QImage::Format_ARGB32));
+        runBaseTransform([](const QImage& base) {
+            return base.convertToFormat(QImage::Format_Grayscale8)
+                .convertToFormat(QImage::Format_ARGB32);
+        });
     }
     void autoEnhanceImage() {
-        const QImage base = baseImageForTransform();
-        if (!base.isNull())
-            document.applyBaseImage(snowViewAutoEnhancedImage(base));
+        runBaseTransform([](const QImage& base) { return snowViewAutoEnhancedImage(base); });
     }
-    void showAdjustDialog() {
-        const QImage base = baseImageForTransform();
-        if (base.isNull())
+    void syncAdjustButtonState() {
+        if (!adjustButton)
             return;
-        QDialog dialog(surface->window());
-        dialog.setWindowTitle(QCoreApplication::translate("ImageEditingWindow", "Adjust image"));
-        dialog.setModal(true);
-        auto* layout = new QVBoxLayout(&dialog);
-        auto* preview = new QLabel(&dialog);
-        preview->setAlignment(Qt::AlignCenter);
-        layout->addWidget(preview);
-        const QImage previewBase =
-            base.scaled(440, 300, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        const auto addSlider = [&dialog, layout](const QString& label, int minimum, int maximum) {
-            auto* row = new QHBoxLayout;
-            auto* caption = new QLabel(label, &dialog);
-            caption->setMinimumWidth(90);
-            row->addWidget(caption);
-            auto* slider = new QSlider(Qt::Horizontal, &dialog);
-            slider->setRange(minimum, maximum);
-            slider->setValue(0);
-            row->addWidget(slider, 1);
-            layout->addLayout(row);
-            return slider;
-        };
-        auto* brightness =
-            addSlider(QCoreApplication::translate("ImageEditingWindow", "Brightness"), -100, 100);
-        auto* contrast =
-            addSlider(QCoreApplication::translate("ImageEditingWindow", "Contrast"), -100, 100);
-        auto* saturation =
-            addSlider(QCoreApplication::translate("ImageEditingWindow", "Saturation"), -100, 100);
-        auto* sharpen =
-            addSlider(QCoreApplication::translate("ImageEditingWindow", "Sharpen"), 0, 100);
-        const auto updatePreview = [preview, previewBase, brightness, contrast, saturation,
-                                    sharpen] {
-            preview->setPixmap(QPixmap::fromImage(
-                snowViewAdjustedImage(previewBase, brightness->value(), contrast->value(),
-                                      saturation->value(), sharpen->value())));
-        };
-        for (auto* slider : {brightness, contrast, saturation, sharpen})
-            QObject::connect(slider, &QSlider::valueChanged, &dialog,
-                             [updatePreview](int) { updatePreview(); });
-        updatePreview();
-        auto* buttons = new QHBoxLayout;
-        buttons->addStretch(1);
-        auto* cancelButton =
-            new QPushButton(QCoreApplication::translate("ImageEditingWindow", "Cancel"), &dialog);
-        auto* applyButton =
-            new QPushButton(QCoreApplication::translate("ImageEditingWindow", "Apply"), &dialog);
-        applyButton->setDefault(true);
-        buttons->addWidget(cancelButton);
-        buttons->addWidget(applyButton);
-        layout->addLayout(buttons);
-        QObject::connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
-        QObject::connect(applyButton, &QPushButton::clicked, &dialog, &QDialog::accept);
-        if (dialog.exec() == QDialog::Accepted &&
-            (brightness->value() != 0 || contrast->value() != 0 || saturation->value() != 0 ||
-             sharpen->value() != 0))
-            document.applyBaseImage(snowViewAdjustedImage(base, brightness->value(),
-                                                          contrast->value(), saturation->value(),
-                                                          sharpen->value()));
+        adjustButton->setChecked(adjustActive);
+        adjustButton->setButtonStyle(adjustActive ? AdButton::ButtonStyle::Solid
+                                                  : AdButton::ButtonStyle::Text);
+        adjustButton->setAccentRole(adjustActive ? AdButton::AccentRole::Primary
+                                                 : AdButton::AccentRole::Neutral);
+    }
+    void resetAdjustSliders() {
+        for (int i = 0; i < 4; ++i) {
+            if (auto* slider = adjustSliders[static_cast<std::size_t>(i)]) {
+                const QSignalBlocker blocker(slider);
+                slider->setValue(0);
+            }
+            if (auto* label = adjustValueLabels[static_cast<std::size_t>(i)])
+                label->setText(QStringLiteral("0"));
+        }
+        applyAdjustPreviewNow();
+    }
+    void scheduleAdjustPreview() {
+        if (!adjustActive)
+            return;
+        adjustPreviewTimer.start();
+    }
+    void applyAdjustPreviewNow() {
+        if (!adjustActive || adjustPreviewBase.isNull())
+            return;
+        const int b = adjustSliders[0] ? qRound(adjustSliders[0]->value()) : 0;
+        const int c = adjustSliders[1] ? qRound(adjustSliders[1]->value()) : 0;
+        const int s = adjustSliders[2] ? qRound(adjustSliders[2]->value()) : 0;
+        const int sh = adjustSliders[3] ? qRound(adjustSliders[3]->value()) : 0;
+        if (b == 0 && c == 0 && s == 0 && sh == 0) {
+            if (adjustFlattenPending && !adjustBaseImage.isNull())
+                document.setPreviewImage(adjustBaseImage);
+            else
+                document.clearPreviewImage();
+            return;
+        }
+        document.setPreviewImage(snowViewAdjustedImage(adjustPreviewBase, b, c, s, sh));
+    }
+    void exitAdjustMode(bool apply) {
+        if (!adjustActive)
+            return;
+        adjustPreviewTimer.stop();
+        const bool flatten = adjustFlattenPending;
+        const QImage base = std::move(adjustBaseImage);
+        const int b = adjustSliders[0] ? qRound(adjustSliders[0]->value()) : 0;
+        const int c = adjustSliders[1] ? qRound(adjustSliders[1]->value()) : 0;
+        const int s = adjustSliders[2] ? qRound(adjustSliders[2]->value()) : 0;
+        const int sh = adjustSliders[3] ? qRound(adjustSliders[3]->value()) : 0;
+        adjustActive = false;
+        adjustFlattenPending = false;
+        adjustBaseImage = {};
+        adjustPreviewBase = {};
+        document.clearPreviewImage();
+        canvas->setCanvasContentVisible(true);
+        syncAdjustButtonState();
+        syncTaskPaneVisibility();
+        if (apply && !base.isNull() && (b != 0 || c != 0 || s != 0 || sh != 0 || flatten)) {
+            const QImage adjusted = (b == 0 && c == 0 && s == 0 && sh == 0)
+                                        ? base
+                                        : snowViewAdjustedImage(base, b, c, s, sh);
+            if (!adjusted.isNull()) {
+                if (flatten)
+                    document.applyFlattenedBaseImage(adjusted);
+                else
+                    document.applyBaseImage(adjusted);
+            }
+        }
+        canvas->setFocus();
+    }
+    void toggleAdjustMode() {
+        if (loading || cropBusy || document.image().isNull())
+            return;
+        if (adjustActive) {
+            exitAdjustMode(false);
+            return;
+        }
+        confirmAnnotationFlattenThen([this](bool flatten) {
+            const QImage base = flatten ? document.renderFlattenedBaseImage() : document.image();
+            if (base.isNull())
+                return;
+            if (canvas->mode() != ImageEditingCanvas::Mode::Pan)
+                drawing(ImageEditingCanvas::Mode::Pan);
+            if (session)
+                session->deactivate();
+            cancelColorSampling();
+            stack->setCurrentWidget(canvas);
+            adjustFlattenPending = flatten;
+            adjustBaseImage = base;
+            const int maxSide = std::max(base.width(), base.height());
+            adjustPreviewBase = maxSide > 1600 ? base.scaled(1600, 1600, Qt::KeepAspectRatio,
+                                                             Qt::SmoothTransformation)
+                                               : base;
+            adjustActive = true;
+            resetAdjustSliders();
+            syncAdjustButtonState();
+            syncTaskPaneVisibility();
+            if (flatten) {
+                document.setPreviewImage(base);
+                canvas->setCanvasContentVisible(false);
+            }
+            if (adjustSliders[0])
+                adjustSliders[0]->setFocus();
+        });
     }
     void undo(bool redo) {
         if (cropBusy || loading)
             return;
+        if (adjustActive)
+            exitAdjustMode(false);
         if (session && session->active()) {
             if (session->tableModeActive()) {
                 if (redo)
@@ -2022,6 +2423,8 @@ void ImageEditingWindow::Impl::syncRecognitionDisplay() {
         imageToolbar->raise();
     if (cropButton)
         cropButton->setEnabled(!recognitionVisible);
+    if (adjustButton)
+        adjustButton->setEnabled(!recognitionVisible);
     fit->setEnabled(!recognitionVisible || showImage);
     actual->setEnabled(!recognitionVisible || showImage);
 }
@@ -2565,8 +2968,24 @@ bool ImageEditingWindow::Impl::exportContent(ExportOperation operation) {
     if (!lifetime || closing)
         return false;
     palette->setCloudUploadBusy(operation == ExportOperation::Upload);
+    ImageEditingExportController::SaveOptions saveOptions;
+    if (operation == ExportOperation::Save && !recognitionContent && !currentFilePath.isEmpty()) {
+        saveOptions.initialFilePath = currentFilePath;
+        saveOptions.fileSaved = [this, lifetime](const QString& savedPath) {
+            if (!lifetime || closing || savedPath.isEmpty())
+                return;
+            if (!filmstripDirPath.isEmpty() &&
+                QString::compare(QFileInfo(savedPath).absolutePath(), filmstripDirPath,
+                                 Qt::CaseInsensitive) == 0) {
+                filmstripDirPath.clear();
+                refreshFilmstrip();
+            } else {
+                refreshMetadata();
+            }
+        };
+    }
     exporter.start(operation, std::move(content), surface->window(), floating,
-                   completion(std::move(checkpoint), recognitionContent));
+                   completion(std::move(checkpoint), recognitionContent), std::move(saveOptions));
     return true;
 }
 
@@ -2838,6 +3257,14 @@ void ImageEditingWindow::present(ImageEditingSource source) {
     auto& d = *m_impl;
     if (d.closing)
         return;
+    if (d.adjustActive)
+        d.exitAdjustMode(false);
+    if (d.cropFlattenPending) {
+        d.cropFlattenPending = false;
+        d.cropFlattenSource = {};
+        d.document.clearPreviewImage();
+        d.canvas->setCanvasContentVisible(true);
+    }
     d.errorSource = nullptr;
     const auto generation = ++d.loadGeneration;
     d.cancelLoading();
@@ -3066,6 +3493,10 @@ bool ImageEditingWindow::preparePendingEdits(bool requireCanvasCommit) {
     if (m_impl->closing)
         return false;
     const QPointer<ImageEditingWindow> lifetime(this);
+    if (m_impl->adjustActive)
+        m_impl->exitAdjustMode(false);
+    if (m_impl->canvas->mode() == ImageEditingCanvas::Mode::CropRect)
+        m_impl->drawing(ImageEditingCanvas::Mode::Pan);
     const bool canvasPrepared = m_impl->canvas->resetEditingStatePreservingTool();
     if (!lifetime || m_impl->closing || (requireCanvasCommit && !canvasPrepared))
         return false;
@@ -3126,7 +3557,17 @@ void ImageEditingWindow::shutdown() {
     const QPointer<ImageEditingWindow> lifetime(this);
     auto& d = *m_impl;
     const QPointer<AdModal> confirmation = d.confirmation;
+    const QPointer<AdModal> flattenConfirmation = d.flattenConfirmation;
     d.closing = true;
+    d.adjustPreviewTimer.stop();
+    d.adjustActive = false;
+    d.adjustFlattenPending = false;
+    d.adjustBaseImage = {};
+    d.adjustPreviewBase = {};
+    d.cropFlattenPending = false;
+    d.cropFlattenSource = {};
+    if (flattenConfirmation)
+        flattenConfirmation->reject();
     d.dropHint->hide();
     if (d.fileDialog) {
         d.fileDialog->reject();

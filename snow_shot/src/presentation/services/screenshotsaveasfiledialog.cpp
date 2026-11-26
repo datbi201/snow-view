@@ -67,9 +67,11 @@ class SaveContent final : public ImageExportEditor {
     SaveContent(AdModal* modal, std::shared_ptr<ScreenshotExportArtifact> artifact,
                 ScreenshotSaveAsFileDialog::Saved saved,
                 ScreenshotSaveAsFileDialog::BeforeWrite beforeWrite, bool retainFile,
+                const QString& initialFilePath = {},
                 const QDateTime& timestamp = QDateTime::currentDateTime())
-        : ImageExportEditor(
-              ScreenshotSaveDialogState::initial({}, timestamp, artifact->exportContext()), true),
+        : ImageExportEditor(ScreenshotSaveDialogState::initial(
+                                {}, timestamp, artifact->exportContext(), initialFilePath),
+                            true),
           m_modal(modal), m_saved(std::move(saved)), m_beforeWrite(std::move(beforeWrite)),
           m_retainFile(retainFile), m_exportContext(artifact->exportContext()),
           m_timestamp(timestamp) {
@@ -671,7 +673,8 @@ class SaveContent final : public ImageExportEditor {
 
 ScreenshotSaveDialogState
 ScreenshotSaveDialogState::initial(QSize size, const QDateTime& timestamp,
-                                   const snow_shot::storage::ScreenshotExportContext& names) {
+                                   const snow_shot::storage::ScreenshotExportContext& names,
+                                   const QString& initialFilePath) {
     ScreenshotSaveDialogState result;
     const snow_shot::storage::ScreenshotSettings settings;
     const QFileInfo remembered(settings.lastManualSaveDirectory());
@@ -691,6 +694,17 @@ ScreenshotSaveDialogState::initial(QSize size, const QDateTime& timestamp,
     result.output.size = size;
     result.output.format =
         ScreenshotImageFileService::formatForKey(settings.lastManualSaveFormat());
+    if (!initialFilePath.isEmpty()) {
+        const QFileInfo initialInfo(initialFilePath);
+        const QString dir = initialInfo.absolutePath();
+        const QString stem = initialInfo.completeBaseName();
+        if (!dir.isEmpty() && QDir::isAbsolutePath(dir))
+            result.directory = QDir::cleanPath(dir);
+        if (!stem.isEmpty())
+            result.filename = stem;
+        if (const auto format = ScreenshotImageFileService::formatForPath(initialFilePath))
+            result.output.format = *format;
+    }
     const QJsonObject rememberedOptions =
         settings.manualSaveFormatOptions()
             .value(ScreenshotImageFileService::formatKey(result.output.format))
@@ -750,7 +764,7 @@ bool ScreenshotSaveAsFileDialog::open(QObject* lifetime, QWidget* owner,
                                       std::shared_ptr<ScreenshotExportArtifact> source, Saved saved,
                                       Finished finished, QWidget* stackingOwner,
                                       Qt::WindowModality modality, BeforeWrite beforeWrite,
-                                      bool retainFile) {
+                                      bool retainFile, const QString& initialFilePath) {
     if (!lifetime || !owner || !source || !source->isValid())
         return false;
     const QPointer<QWidget> stackingWindow(
@@ -765,7 +779,7 @@ bool ScreenshotSaveAsFileDialog::open(QObject* lifetime, QWidget* owner,
     const QRect available = owner->screen()->availableGeometry();
     modal->setPreferredWidth(std::min(1080, available.width() - 40));
     auto* content = new SaveContent(modal, std::move(source), std::move(saved),
-                                    std::move(beforeWrite), retainFile);
+                                    std::move(beforeWrite), retainFile, initialFilePath);
     modal->setContentWidget(content);
     QObject::connect(modal, &AdModal::closeRequested, content,
                      [modal, content](AdModal::CloseReason reason) {
@@ -814,12 +828,12 @@ bool ScreenshotSaveAsFileDialog::open(QObject* lifetime, QWidget* owner,
 bool ScreenshotSaveAsFileDialog::open(QObject* lifetime, QWidget* owner, const QImage& image,
                                       Saved saved, Finished finished, QWidget* stackingOwner,
                                       Qt::WindowModality modality, BeforeWrite beforeWrite,
-                                      bool retainFile) {
+                                      bool retainFile, const QString& initialFilePath) {
     if (image.isNull())
         return false;
     return open(
         lifetime, owner,
         std::make_shared<ScreenshotExportArtifact>(ScreenshotExportSource::fromImage(image)),
         std::move(saved), std::move(finished), stackingOwner, modality, std::move(beforeWrite),
-        retainFile);
+        retainFile, initialFilePath);
 }

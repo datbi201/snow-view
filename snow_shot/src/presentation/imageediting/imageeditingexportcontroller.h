@@ -31,6 +31,10 @@ class ImageEditingExportController final : public QObject {
         std::optional<ScreenshotCloudUploadOptions> file;
         QDateTime requestedAt;
     };
+    struct SaveOptions {
+        QString initialFilePath;
+        std::function<void(const QString&)> fileSaved;
+    };
     using Completion = std::function<void(bool, QString)>;
     using Pin = std::function<bool(QImage, std::function<void(bool)>)>;
 
@@ -41,7 +45,7 @@ class ImageEditingExportController final : public QObject {
     bool busy() const;
     bool canStart(Operation operation) const;
     void start(Operation operation, Content content, QWidget* owner, QWidget* stackingOwner,
-               Completion completion);
+               Completion completion, SaveOptions saveOptions = {});
     void startCopy(CopyContent content, CopyOptions options, QWidget* owner, Completion completion);
     void cancelCopy();
     // Retires the request before cancelling services so reentrant and late callbacks are ignored.

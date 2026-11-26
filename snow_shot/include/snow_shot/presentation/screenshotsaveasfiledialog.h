@@ -31,7 +31,8 @@ struct ScreenshotSaveDialogState {
     bool lockAspectRatio = true;
     [[nodiscard]] static ScreenshotSaveDialogState
     initial(QSize sourceSize, const QDateTime& timestamp = QDateTime::currentDateTime(),
-            const snow_shot::storage::ScreenshotExportContext& names = {});
+            const snow_shot::storage::ScreenshotExportContext& names = {},
+            const QString& initialFilePath = {});
     void setDimension(bool width, int value);
     [[nodiscard]] QString imageValidationError() const;
     [[nodiscard]] QString validationError() const;
@@ -53,17 +54,17 @@ class ScreenshotSaveAsFileDialog final {
     using Finished = std::function<void(bool saved)>;
     // owner selects the display/centering; stackingOwner optionally keeps a floating toolbar
     // below the dialog without changing the toolbar's visibility.
-    [[nodiscard]] static bool open(QObject* lifetime, QWidget* owner,
-                                   std::shared_ptr<ScreenshotExportArtifact> source,
-                                   Saved saved = {}, Finished finished = {},
-                                   QWidget* stackingOwner = nullptr,
-                                   Qt::WindowModality modality = Qt::ApplicationModal,
-                                   BeforeWrite beforeWrite = {}, bool retainFile = false);
+    [[nodiscard]] static bool
+    open(QObject* lifetime, QWidget* owner, std::shared_ptr<ScreenshotExportArtifact> source,
+         Saved saved = {}, Finished finished = {}, QWidget* stackingOwner = nullptr,
+         Qt::WindowModality modality = Qt::ApplicationModal, BeforeWrite beforeWrite = {},
+         bool retainFile = false, const QString& initialFilePath = {});
     [[nodiscard]] static bool open(QObject* lifetime, QWidget* owner, const QImage& image,
                                    Saved saved = {}, Finished finished = {},
                                    QWidget* stackingOwner = nullptr,
                                    Qt::WindowModality modality = Qt::ApplicationModal,
-                                   BeforeWrite beforeWrite = {}, bool retainFile = false);
+                                   BeforeWrite beforeWrite = {}, bool retainFile = false,
+                                   const QString& initialFilePath = {});
 };
 
 #endif // SNOW_SHOT_PRESENTATION_SCREENSHOTSAVEASFILEDIALOG_H

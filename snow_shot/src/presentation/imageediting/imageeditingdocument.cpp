@@ -4,6 +4,7 @@
 #include "snow_draw_engine_qt/snow_canvas_image.h"
 #include <QCryptographicHash>
 #include <QCoreApplication>
+#include <QScopedValueRollback>
 #include <QSet>
 #include <cstring>
 #include <QPainter>
@@ -115,6 +116,15 @@ ImageEditingDocument::ImageEditingDocument(QObject* parent)
     : QObject(parent), m_runtime(SnowCanvasRuntimeConfig{screenshotCanvasStyleDefaults()}) {
     m_runtime.setDocumentChangedHandler([this] {
         m_exportCache = {};
+        if (!m_traveling && !m_inHostMutation) {
+            m_flattenRedoStack.clear();
+            if (!m_flattenUndoStack.isEmpty()) {
+                if (m_canvasGestureActive)
+                    m_pendingCanvasGestureCommand = true;
+                else
+                    recordPostFlattenCommand();
+            }
+        }
         pruneCrops();
         emit changed();
     });
@@ -136,6 +146,7 @@ bool ImageEditingDocument::load(const ImageEditingSource& source) {
     if (!restored)
         return false;
     m_image = std::move(image);
+    m_previewImage = {};
     if (m_image.devicePixelRatio() != 1)
         m_image.setDevicePixelRatio(1);
     m_originalFileName = source.originalFileName;
@@ -145,7 +156,12 @@ bool ImageEditingDocument::load(const ImageEditingSource& source) {
     m_samplingSources = exteriorSamplingSources(source.samplingSources, source.canvasRect);
     m_crops.clear();
     m_baseEdits.clear();
+    m_flattenUndoStack.clear();
+    m_flattenRedoStack.clear();
     m_serial = 0;
+    m_flattenEpochId = 0;
+    m_canvasGestureActive = false;
+    m_pendingCanvasGestureCommand = false;
     updateSources();
     m_runtime.seedSmartEraseSnapshot(source.smartErase);
     m_saved = checkpoint();
@@ -161,6 +177,49 @@ QRectF ImageEditingDocument::bounds() const {
 QPointF ImageEditingDocument::imagePixelAt(QPointF point) const {
     return {(point.x() - m_origin.x()) / m_unitsPerPixel.width(),
             (point.y() - m_origin.y()) / m_unitsPerPixel.height()};
+}
+
+void ImageEditingDocument::setPreviewImage(QImage image) {
+    if (m_previewImage.isNull() && image.isNull())
+        return;
+    m_previewImage = std::move(image);
+    emit previewImageChanged();
+}
+
+void ImageEditingDocument::clearPreviewImage() {
+    if (m_previewImage.isNull())
+        return;
+    m_previewImage = {};
+    emit previewImageChanged();
+}
+
+QImage ImageEditingDocument::renderFlattenedBaseImage() const {
+    if (m_image.isNull())
+        return {};
+    if (!m_runtime.hasDocumentContent())
+        return m_image;
+    const QColorSpace colorSpace = m_image.colorSpace();
+    const qreal dpr = m_image.devicePixelRatio();
+    const QRectF canvasRect = bounds();
+    const auto base = baseImageSources();
+    const auto smartEraseSeed = m_runtime.smartEraseSnapshot();
+    if (!smartEraseSeed.cacheKey().isEmpty()) {
+        const_cast<SnowCanvasRuntime&>(m_runtime).prepareSmartEraseForExport(smartEraseSeed, base,
+                                                                             canvasRect);
+    }
+    QList<CanvasExportSource> sources;
+    sources.reserve(base.size());
+    for (const auto& source : base)
+        sources.append({source.image, source.canvasRect, source.coverage});
+    QImage rendered = const_cast<SnowCanvasRuntime&>(m_runtime).renderToImage(
+        canvasRect, m_image.size(), sources, m_image);
+    if (rendered.isNull())
+        return {};
+    if (rendered.devicePixelRatio() != dpr)
+        rendered.setDevicePixelRatio(dpr);
+    if (colorSpace.isValid() && !rendered.colorSpace().isValid())
+        rendered.setColorSpace(colorSpace);
+    return rendered;
 }
 
 ImageEditingDocument::Crop
@@ -194,12 +253,18 @@ ImageEditingDocument::prepareCrop(const QImage& image, CropAxis axis, int first,
 bool ImageEditingDocument::applyCrop(Crop crop) {
     if (crop.result.isNull() || crop.sourceKey != m_image.cacheKey())
         return false;
+    m_previewImage = {};
     const auto before = baseState();
     const auto token = ++m_serial;
-    if (!m_runtime.commitHostHistoryState(token))
-        return false;
+    {
+        QScopedValueRollback mutationGuard(m_inHostMutation, true);
+        if (!m_runtime.commitHostHistoryState(token))
+            return false;
+    }
+    m_flattenRedoStack.clear();
     m_image = std::move(crop.result);
     m_crops.insert(token, CropEntry{before, std::move(crop)});
+    recordPostFlattenCommand();
     pruneCrops();
     updateSources();
     emit baseImageChanged();
@@ -212,17 +277,87 @@ bool ImageEditingDocument::crop(CropAxis axis, int first, int last) {
 bool ImageEditingDocument::applyBaseImage(QImage image) {
     if (image.isNull() || m_image.isNull() || image.cacheKey() == m_image.cacheKey())
         return false;
+    m_previewImage = {};
     const auto before = baseState();
     const auto token = ++m_serial;
-    if (!m_runtime.commitHostHistoryState(token))
-        return false;
+    {
+        QScopedValueRollback mutationGuard(m_inHostMutation, true);
+        if (!m_runtime.commitHostHistoryState(token))
+            return false;
+    }
+    m_flattenRedoStack.clear();
     m_baseEdits.insert(token, BaseEditEntry{before, m_image, image});
     m_image = std::move(image);
+    recordPostFlattenCommand();
     pruneCrops();
     updateSources();
     emit baseImageChanged();
     emit changed();
     return true;
+}
+bool ImageEditingDocument::applyFlattenedBaseImage(QImage image) {
+    if (image.isNull() || m_image.isNull())
+        return false;
+    QByteArray serialized = m_runtime.serializeDocumentHistory();
+    if (serialized.isEmpty())
+        return false;
+    FlattenUndoEntry entry;
+    entry.preVectorHistory = std::move(serialized);
+    entry.preImage = m_image;
+    entry.preSamplingSources = m_samplingSources;
+    entry.preSmartErase = m_runtime.smartEraseSnapshot();
+    entry.preEpochId = m_flattenEpochId;
+    entry.stepsFromFlatten = 0;
+
+    m_previewImage = {};
+    m_canvasGestureActive = false;
+    m_pendingCanvasGestureCommand = false;
+    m_flattenRedoStack.clear();
+    {
+        QScopedValueRollback mutationGuard(m_inHostMutation, true);
+        if (!m_runtime.clearDocumentPreservingViewports())
+            return false;
+    }
+    // Existing outer flatten checkpoints count this flatten+transform as 1 command.
+    recordPostFlattenCommand();
+    m_flattenUndoStack.append(std::move(entry));
+    m_crops.clear();
+    m_baseEdits.clear();
+    m_image = std::move(image);
+    m_flattenEpochId = ++m_nextFlattenEpochId;
+    updateSources();
+    emit baseImageChanged();
+    emit changed();
+    return true;
+}
+void ImageEditingDocument::setCanvasGestureActive(bool active) {
+    if (m_canvasGestureActive == active)
+        return;
+    m_canvasGestureActive = active;
+    if (active) {
+        m_pendingCanvasGestureCommand = false;
+    } else if (std::exchange(m_pendingCanvasGestureCommand, false)) {
+        recordPostFlattenCommand();
+        emit changed();
+    }
+}
+bool ImageEditingDocument::canUndo() const {
+    return m_runtime.canUndo() || !m_flattenUndoStack.isEmpty();
+}
+bool ImageEditingDocument::canRedo() const {
+    return m_runtime.canRedo() || !m_flattenRedoStack.isEmpty();
+}
+void ImageEditingDocument::recordPostFlattenCommand() {
+    for (auto& entry : m_flattenUndoStack)
+        ++entry.stepsFromFlatten;
+    while (!m_flattenUndoStack.isEmpty() &&
+           m_flattenUndoStack.first().stepsFromFlatten > kMaxVectorUndoCommandsAfterFlatten) {
+        m_flattenUndoStack.removeFirst();
+    }
+}
+void ImageEditingDocument::adjustFlattenStepDistances(int delta) {
+    for (auto& entry : m_flattenUndoStack)
+        entry.stepsFromFlatten = std::max(0, entry.stepsFromFlatten + delta);
 }
 ImageEditingDocument::HistoryTransition ImageEditingDocument::historyTransition(bool redo) const {
     HistoryTransition transition;
@@ -231,6 +366,14 @@ ImageEditingDocument::HistoryTransition ImageEditingDocument::historyTransition(
     transition.nextState = m_runtime.hostHistoryState(redo ? 1 : -1);
     transition.revision = m_runtime.documentRevision();
     transition.sourceKey = m_image.cacheKey();
+    if (!redo && !m_runtime.canUndo() && !m_flattenUndoStack.isEmpty()) {
+        transition.flattenBoundary = true;
+        return transition;
+    }
+    if (redo && !m_runtime.canRedo() && !m_flattenRedoStack.isEmpty()) {
+        transition.flattenBoundary = true;
+        return transition;
+    }
     if (transition.nextState != transition.state) {
         const auto key = redo ? transition.nextState : transition.state;
         const auto entry = m_crops.constFind(key);
@@ -246,20 +389,93 @@ ImageEditingDocument::HistoryTransition ImageEditingDocument::historyTransition(
 }
 void ImageEditingDocument::prepareHistoryTransition(HistoryTransition& transition,
                                                     const std::function<bool()>& cancelled) {
-    if (transition.image.isNull() || transition.baseEdit)
+    if (transition.flattenBoundary || transition.image.isNull() || transition.baseEdit)
         return;
     transition.image = transition.redo ? removeStrip(transition.image, transition.crop, cancelled)
                                        : joinStrip(transition.image, transition.crop, cancelled);
 }
 bool ImageEditingDocument::applyHistoryTransition(HistoryTransition transition) {
-    if (baseState() != transition.state || m_image.cacheKey() != transition.sourceKey ||
-        m_runtime.documentRevision() != transition.revision ||
+    if (m_image.cacheKey() != transition.sourceKey ||
+        m_runtime.documentRevision() != transition.revision)
+        return false;
+    if (transition.flattenBoundary) {
+        m_previewImage = {};
+        m_canvasGestureActive = false;
+        m_pendingCanvasGestureCommand = false;
+        QScopedValueRollback travelingGuard(m_traveling, true);
+        if (!transition.redo) {
+            if (m_runtime.canUndo() || m_flattenUndoStack.isEmpty())
+                return false;
+            const FlattenUndoEntry entry = m_flattenUndoStack.takeLast();
+            QByteArray postHistory = m_runtime.serializeDocumentHistory();
+            if (!m_runtime.restoreDocumentHistoryPreservingEditorStyles(entry.preVectorHistory)) {
+                m_flattenUndoStack.append(entry);
+                return false;
+            }
+            FlattenRedoEntry redoEntry;
+            redoEntry.flattenEntry = entry;
+            redoEntry.postVectorHistory = std::move(postHistory);
+            redoEntry.postImage = m_image;
+            redoEntry.postSamplingSources = m_samplingSources;
+            redoEntry.postSmartErase = m_runtime.smartEraseSnapshot();
+            redoEntry.postEpochId = m_flattenEpochId;
+            redoEntry.postSerial = m_serial;
+            redoEntry.postCrops = m_crops;
+            redoEntry.postBaseEdits = m_baseEdits;
+            m_flattenRedoStack.append(std::move(redoEntry));
+            adjustFlattenStepDistances(-1);
+            m_image = entry.preImage;
+            m_samplingSources = entry.preSamplingSources;
+            m_runtime.seedSmartEraseSnapshot(entry.preSmartErase);
+            m_flattenEpochId = entry.preEpochId;
+            m_crops.clear();
+            m_baseEdits.clear();
+            updateSources();
+            emit baseImageChanged();
+            emit changed();
+            return true;
+        }
+        if (m_runtime.canRedo() || m_flattenRedoStack.isEmpty())
+            return false;
+        const FlattenRedoEntry redoEntry = m_flattenRedoStack.takeLast();
+        const bool restored = !redoEntry.postVectorHistory.isEmpty()
+                                  ? m_runtime.restoreDocumentHistoryPreservingEditorStyles(
+                                        redoEntry.postVectorHistory)
+                                  : m_runtime.clearDocumentPreservingViewports();
+        if (!restored) {
+            m_flattenRedoStack.append(redoEntry);
+            return false;
+        }
+        adjustFlattenStepDistances(1);
+        m_flattenUndoStack.append(redoEntry.flattenEntry);
+        m_image = redoEntry.postImage;
+        m_samplingSources = redoEntry.postSamplingSources;
+        m_runtime.seedSmartEraseSnapshot(redoEntry.postSmartErase);
+        m_flattenEpochId = redoEntry.postEpochId;
+        m_serial = redoEntry.postSerial;
+        m_crops = redoEntry.postCrops;
+        m_baseEdits = redoEntry.postBaseEdits;
+        updateSources();
+        emit baseImageChanged();
+        emit changed();
+        return true;
+    }
+    if (baseState() != transition.state ||
         m_runtime.hostHistoryState(transition.redo ? 1 : -1) != transition.nextState)
         return false;
     if (transition.state != transition.nextState && transition.image.isNull())
         return false;
-    if (!(transition.redo ? m_runtime.redo() : m_runtime.undo()))
+    m_previewImage = {};
+    m_canvasGestureActive = false;
+    m_pendingCanvasGestureCommand = false;
+    bool ok = false;
+    {
+        QScopedValueRollback travelingGuard(m_traveling, true);
+        ok = transition.redo ? m_runtime.redo() : m_runtime.undo();
+    }
+    if (!ok)
         return false;
+    adjustFlattenStepDistances(transition.redo ? 1 : -1);
     if (transition.state != transition.nextState) {
         m_image = std::move(transition.image);
         updateSources();
@@ -323,19 +539,25 @@ QByteArray ImageEditingDocument::checkpoint() const {
     if (bytes.isEmpty())
         return QByteArrayLiteral("unserializable:") +
                QByteArray::number(m_runtime.documentRevision()) + ":" +
-               QByteArray::number(baseState());
+               QByteArray::number(baseState()) + ":" + QByteArray::number(m_flattenEpochId);
     const auto state = baseState();
+    const auto epoch = m_flattenEpochId;
     if (!m_checkpointContent.isEmpty() && bytes.constData() == m_checkpointContent.constData() &&
-        state == m_checkpointBaseState)
+        state == m_checkpointBaseState && epoch == m_checkpointFlattenEpochId)
         return m_checkpoint;
     QCryptographicHash hash(QCryptographicHash::Sha256);
     hash.addData(bytes);
     hash.addData(QByteArray::number(state));
+    if (epoch != 0) {
+        hash.addData(QByteArrayLiteral(":flatten:"));
+        hash.addData(QByteArray::number(epoch));
+    }
     m_checkpoint = hash.result();
     // Share the runtime's bounded cache; retaining the bytes also makes identity comparisons
     // safe when a different runtime happens to have the same document revision.
     m_checkpointContent = bytes.size() <= 16 * 1024 * 1024 ? bytes : QByteArray{};
     m_checkpointBaseState = state;
+    m_checkpointFlattenEpochId = epoch;
     return m_checkpoint;
 }
 bool ImageEditingDocument::dirty() const {
