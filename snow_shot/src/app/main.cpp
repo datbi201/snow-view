@@ -686,9 +686,11 @@ int main(int argc, char* argv[]) {
             snow_shot::app::parseShellImageLaunchRequest(launchArguments);
         QStringList pendingImagePaths =
             initialImageRequest.valid ? initialImageRequest.paths : QStringList{};
+        QStringList pendingViewImagePaths =
+            initialImageRequest.valid ? initialImageRequest.viewPaths : QStringList{};
         const auto relaunchArguments = [&] {
-            return snow_shot::update::startupUpdateRelaunchArguments(foregroundRequested,
-                                                                     pendingImagePaths);
+            return snow_shot::update::startupUpdateRelaunchArguments(
+                foregroundRequested, pendingImagePaths, pendingViewImagePaths);
         };
         singleInstance.setLaunchRequestAdmission([&](const QStringList& arguments) {
             if (!startupUpdate.handoffPending())
@@ -698,17 +700,22 @@ int main(int argc, char* argv[]) {
                 foregroundRequested || arguments.contains(QStringLiteral("--show-main-window")) ||
                 (!request.requested && !arguments.contains(QStringLiteral("--autostart")));
             auto paths = pendingImagePaths;
-            if (request.valid)
+            auto viewPaths = pendingViewImagePaths;
+            if (request.valid) {
                 paths.append(request.paths);
+                viewPaths.append(request.viewPaths);
+            }
             return startupUpdate.acceptsRelaunchArguments(
-                snow_shot::update::startupUpdateRelaunchArguments(foreground, paths));
+                snow_shot::update::startupUpdateRelaunchArguments(foreground, paths, viewPaths));
         });
         const auto forwardedLaunch = QObject::connect(
             &singleInstance, &snow_shot::app::SingleInstanceCoordinator::launchRequestReceived,
             &app, [&](const QStringList& arguments) {
                 const auto imageRequest = snow_shot::app::parseShellImageLaunchRequest(arguments);
-                if (imageRequest.valid)
+                if (imageRequest.valid) {
                     pendingImagePaths.append(imageRequest.paths);
+                    pendingViewImagePaths.append(imageRequest.viewPaths);
+                }
                 foregroundRequested =
                     foregroundRequested ||
                     arguments.contains(QStringLiteral("--show-main-window")) ||

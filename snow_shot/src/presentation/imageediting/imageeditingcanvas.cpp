@@ -5,16 +5,95 @@
 #include "snow_shot/presentation/screenshotcanvasrenderer.h"
 #include "snow_draw_engine_qt/snow_canvas_overlay_style.h"
 #include <QPainter>
+#include <QPainterPath>
+#include <QCursor>
+#include <QPolygonF>
 #include <QCoreApplication>
+#include <QFontMetricsF>
 #include <QMouseEvent>
 #include <QEnterEvent>
 #include <QWheelEvent>
 #include <QKeyEvent>
 #include <QResizeEvent>
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <tuple>
 
 namespace snow_shot::presentation {
+namespace {
+constexpr double kCropPi = 3.14159265358979323846;
+
+int normalizeCropDegrees180(double degrees) {
+    int wrapped = qRound(degrees) % 360;
+    if (wrapped > 180)
+        wrapped -= 360;
+    else if (wrapped < -180)
+        wrapped += 360;
+    return wrapped;
+}
+
+std::pair<QPointF, QPointF> cropAxesForDegrees(int degrees) {
+    const double rad = degrees * (kCropPi / 180.0);
+    const double c = std::cos(rad);
+    const double s = std::sin(rad);
+    return {QPointF(c, s), QPointF(-s, c)};
+}
+
+std::array<QPointF, 4> cropBoxCorners(const QPointF& center, const QSizeF& size, const QPointF& u,
+                                      const QPointF& v) {
+    const qreal hw = size.width() * 0.5;
+    const qreal hh = size.height() * 0.5;
+    return {
+        center - u * hw - v * hh,
+        center + u * hw - v * hh,
+        center + u * hw + v * hh,
+        center - u * hw + v * hh,
+    };
+}
+
+qreal cropMaxStepInsideImage(const std::array<QPointF, 4>& fromCorners,
+                             const std::array<QPointF, 4>& toCorners, qreal imgW, qreal imgH) {
+    qreal tMax = 1.0;
+    for (int i = 0; i < 4; ++i) {
+        const QPointF d = toCorners[i] - fromCorners[i];
+        if (d.x() < -1e-9 && toCorners[i].x() < 0.0)
+            tMax = std::min(tMax, std::max<qreal>(0.0, (0.0 - fromCorners[i].x()) / d.x()));
+        if (d.x() > 1e-9 && toCorners[i].x() > imgW)
+            tMax = std::min(tMax, std::max<qreal>(0.0, (imgW - fromCorners[i].x()) / d.x()));
+        if (d.y() < -1e-9 && toCorners[i].y() < 0.0)
+            tMax = std::min(tMax, std::max<qreal>(0.0, (0.0 - fromCorners[i].y()) / d.y()));
+        if (d.y() > 1e-9 && toCorners[i].y() > imgH)
+            tMax = std::min(tMax, std::max<qreal>(0.0, (imgH - fromCorners[i].y()) / d.y()));
+    }
+    return tMax;
+}
+
+QCursor cropRotateCursor() {
+    static const QCursor cursor = [] {
+        QPixmap pm(24, 24);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF arcRect(4.5, 4.5, 15.0, 15.0);
+        const auto drawArrow = [&](const QPen& pen) {
+            p.setPen(pen);
+            p.drawArc(arcRect, 20 * 16, 130 * 16);
+            p.drawLine(QPointF(17.5, 6.2), QPointF(18.6, 10.1));
+            p.drawLine(QPointF(17.5, 6.2), QPointF(13.8, 7.6));
+            p.drawLine(QPointF(6.5, 17.8), QPointF(5.4, 13.9));
+            p.drawLine(QPointF(6.5, 17.8), QPointF(10.2, 16.4));
+            p.drawArc(arcRect, 200 * 16, 130 * 16);
+        };
+        drawArrow(QPen(QColor(0, 0, 0, 210), 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        drawArrow(QPen(Qt::white, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.end();
+        return QCursor(pm, 12, 12);
+    }();
+    return cursor;
+}
+} // namespace
+
 ImageEditingCanvas::ImageEditingCanvas(ImageEditingDocument& document, QWidget* parent)
     : SnowCanvasWidget(document.runtime(), parent), m_document(document),
       m_zoomReadout(new CanvasStatusReadout(this)) {
@@ -36,16 +115,88 @@ ImageEditingCanvas::~ImageEditingCanvas() {
 }
 void ImageEditingCanvas::setMode(Mode mode) {
     m_cropping = m_panning = false;
+    m_cropDragHandle = CropHandle::None;
+    m_cropHoverHandle = CropHandle::None;
+    m_cropAngleDeg = 0;
+    m_cropBaseSize = {};
     m_mode = mode;
     setInteractionEnabled(mode == Mode::Draw);
-    setCursor(mode == Mode::Pan ? Qt::OpenHandCursor : Qt::CrossCursor);
+    if (mode == Mode::CropRect) {
+        initializeCropRect(m_cropAspectRatio);
+        setCursor(Qt::ArrowCursor);
+    } else {
+        m_cropRect = {};
+        setCursor(mode == Mode::Pan ? Qt::OpenHandCursor : Qt::CrossCursor);
+    }
     update();
+}
+void ImageEditingCanvas::setCropAspectRatio(std::optional<double> ratio) {
+    m_cropAspectRatio = (ratio && *ratio > 0.0) ? ratio : std::nullopt;
+    if (m_mode == Mode::CropRect) {
+        initializeCropRect(m_cropAspectRatio);
+        update();
+    }
+}
+void ImageEditingCanvas::setCropAngleDegrees(int degrees) {
+    const int clamped = std::clamp(degrees, -180, 180);
+    if (m_mode != Mode::CropRect) {
+        m_cropAngleDeg = clamped;
+        return;
+    }
+    if (clamped == m_cropAngleDeg && m_cropRect.isValid())
+        return;
+    m_cropAngleDeg = clamped;
+    applyCropAngleConstraints();
+    notifyCropRectChanged();
+    update();
+}
+void ImageEditingCanvas::resetCropRect() {
+    if (m_mode == Mode::CropRect) {
+        m_cropAngleDeg = 0;
+        initializeCropRect(m_cropAspectRatio);
+        update();
+    }
+}
+QRect ImageEditingCanvas::cropPixelRect() const {
+    const QSize size = m_document.image().size();
+    if (size.isEmpty() || !m_cropRect.isValid())
+        return {};
+    if (m_cropAngleDeg == 0) {
+        const int left = std::clamp(qRound(m_cropRect.left()), 0, size.width() - 1);
+        const int top = std::clamp(qRound(m_cropRect.top()), 0, size.height() - 1);
+        const int right = std::clamp(qRound(m_cropRect.right()), left + 1, size.width());
+        const int bottom = std::clamp(qRound(m_cropRect.bottom()), top + 1, size.height());
+        return QRect(left, top, right - left, bottom - top);
+    }
+    const int w = std::max(1, qRound(m_cropRect.width()));
+    const int h = std::max(1, qRound(m_cropRect.height()));
+    return QRect(qRound(m_cropRect.center().x() - w * 0.5),
+                 qRound(m_cropRect.center().y() - h * 0.5), w, h);
+}
+bool ImageEditingCanvas::commitCrop() {
+    if (m_mode != Mode::CropRect)
+        return false;
+    const QRectF box = cropPixelBox();
+    if (!box.isValid() || box.isEmpty())
+        return false;
+    if (cropRectCommitted)
+        cropRectCommitted(box, m_cropAngleDeg);
+    return true;
+}
+void ImageEditingCanvas::cancelCropRect() {
+    if (m_mode != Mode::CropRect)
+        return;
+    m_cropDragHandle = CropHandle::None;
+    if (cropRectCancelled)
+        cropRectCancelled();
 }
 void ImageEditingCanvas::syncImage() {
     m_zoomReadout->dismiss();
     setContentClip(m_document.bounds());
     setDecorationRenderAreas({m_document.bounds(), m_document.bounds()});
     setBaseImageSources(baseImageSources());
+    if (m_mode == Mode::CropRect)
+        initializeCropRect(m_cropAspectRatio);
     if (!m_fitted)
         fit();
     else
@@ -100,6 +251,512 @@ void ImageEditingCanvas::setRecognitionBackground(QImage image, const QRectF& ca
 QPointF ImageEditingCanvas::pixelAt(QPointF view) const {
     return m_document.imagePixelAt(canvasToViewTransform().inverted().map(view));
 }
+QRectF ImageEditingCanvas::cropCanvasRect(const QRectF& pixelRect) const {
+    const QSize imgSize = m_document.image().size();
+    const QRectF bounds = m_document.bounds();
+    if (imgSize.isEmpty() || bounds.isEmpty() || !pixelRect.isValid())
+        return {};
+    const qreal scaleX = bounds.width() / imgSize.width();
+    const qreal scaleY = bounds.height() / imgSize.height();
+    return QRectF(bounds.x() + pixelRect.x() * scaleX, bounds.y() + pixelRect.y() * scaleY,
+                  pixelRect.width() * scaleX, pixelRect.height() * scaleY);
+}
+std::pair<QPointF, QPointF> ImageEditingCanvas::cropPixelAxes() const {
+    return cropAxesForDegrees(m_cropAngleDeg);
+}
+std::array<QPointF, 4> ImageEditingCanvas::cropViewCorners() const {
+    const QSize imgSize = m_document.image().size();
+    const QRectF bounds = m_document.bounds();
+    if (m_mode != Mode::CropRect || !m_cropRect.isValid() || imgSize.isEmpty() || bounds.isEmpty())
+        return {};
+    const auto [u, v] = cropPixelAxes();
+    const auto pxCorners = cropBoxCorners(m_cropRect.center(), m_cropRect.size(), u, v);
+    const qreal sx = bounds.width() / imgSize.width();
+    const qreal sy = bounds.height() / imgSize.height();
+    const QTransform xform = canvasToViewTransform();
+    const auto toView = [&](const QPointF& px) {
+        return xform.map(QPointF(bounds.x() + px.x() * sx, bounds.y() + px.y() * sy));
+    };
+    return {toView(pxCorners[0]), toView(pxCorners[1]), toView(pxCorners[2]), toView(pxCorners[3])};
+}
+QRectF ImageEditingCanvas::cropViewRect() const {
+    if (m_mode != Mode::CropRect || !m_cropRect.isValid())
+        return {};
+    const auto corners = cropViewCorners();
+    QPolygonF poly;
+    poly << corners[0] << corners[1] << corners[2] << corners[3];
+    return poly.boundingRect();
+}
+ImageEditingCanvas::CropHandle ImageEditingCanvas::cropHandleAt(const QPointF& viewPos) const {
+    if (m_mode != Mode::CropRect || !m_cropRect.isValid())
+        return CropHandle::None;
+    const auto corners = cropViewCorners();
+    const QPointF& tl = corners[0];
+    const QPointF& tr = corners[1];
+    const QPointF& bl = corners[3];
+    const QPointF uVec = tr - tl;
+    const QPointF vVec = bl - tl;
+    const qreal viewW = std::hypot(uVec.x(), uVec.y());
+    const qreal viewH = std::hypot(vVec.x(), vVec.y());
+    if (viewW < 1e-6 || viewH < 1e-6)
+        return CropHandle::None;
+    const QPointF uV = uVec / viewW;
+    const QPointF vV = vVec / viewH;
+    const QPointF centerView = (corners[0] + corners[2]) * 0.5;
+    const QPointF rel = viewPos - centerView;
+    const qreal lx = QPointF::dotProduct(rel, uV);
+    const qreal ly = QPointF::dotProduct(rel, vV);
+    const qreal hw = viewW * 0.5;
+    const qreal hh = viewH * 0.5;
+
+    constexpr qreal kCornerRadius = 11.0;
+    constexpr qreal kEdgeHit = 8.0;
+    constexpr qreal kRotateOuterRadius = 42.0;
+    struct CornerCandidate {
+        CropHandle handle;
+        QPointF pos;
+    };
+    const std::array<CornerCandidate, 4> cornerList{{
+        {CropHandle::TopLeft, corners[0]},
+        {CropHandle::TopRight, corners[1]},
+        {CropHandle::BottomRight, corners[2]},
+        {CropHandle::BottomLeft, corners[3]},
+    }};
+    CropHandle nearestCorner = CropHandle::None;
+    qreal nearestDist = kCornerRadius;
+    for (const auto& c : cornerList) {
+        const qreal d = std::hypot(viewPos.x() - c.pos.x(), viewPos.y() - c.pos.y());
+        if (d <= nearestDist) {
+            nearestDist = d;
+            nearestCorner = c.handle;
+        }
+    }
+    if (nearestCorner != CropHandle::None)
+        return nearestCorner;
+    if (std::abs(lx) <= hw + kEdgeHit) {
+        if (std::abs(ly + hh) <= kEdgeHit)
+            return CropHandle::Top;
+        if (std::abs(ly - hh) <= kEdgeHit)
+            return CropHandle::Bottom;
+    }
+    if (std::abs(ly) <= hh + kEdgeHit) {
+        if (std::abs(lx + hw) <= kEdgeHit)
+            return CropHandle::Left;
+        if (std::abs(lx - hw) <= kEdgeHit)
+            return CropHandle::Right;
+    }
+    if (std::abs(lx) <= hw && std::abs(ly) <= hh)
+        return CropHandle::Move;
+
+    qreal minOutsideCornerDist = kRotateOuterRadius + 1.0;
+    for (const auto& c : cornerList) {
+        const qreal d = std::hypot(viewPos.x() - c.pos.x(), viewPos.y() - c.pos.y());
+        minOutsideCornerDist = std::min(minOutsideCornerDist, d);
+    }
+    if (minOutsideCornerDist <= kRotateOuterRadius)
+        return CropHandle::Rotate;
+    return CropHandle::Create;
+}
+QCursor ImageEditingCanvas::cropCursorForHandle(CropHandle handle, bool dragging) const {
+    const auto rotatedResizeCursor = [&](int baseDeg) {
+        int deg = (baseDeg + m_cropAngleDeg) % 180;
+        if (deg < 0)
+            deg += 180;
+        if (deg < 23 || deg >= 158)
+            return Qt::SizeHorCursor;
+        if (deg < 68)
+            return Qt::SizeFDiagCursor;
+        if (deg < 113)
+            return Qt::SizeVerCursor;
+        return Qt::SizeBDiagCursor;
+    };
+    switch (handle) {
+    case CropHandle::TopLeft:
+    case CropHandle::BottomRight:
+        return rotatedResizeCursor(45);
+    case CropHandle::TopRight:
+    case CropHandle::BottomLeft:
+        return rotatedResizeCursor(135);
+    case CropHandle::Top:
+    case CropHandle::Bottom:
+        return rotatedResizeCursor(90);
+    case CropHandle::Left:
+    case CropHandle::Right:
+        return rotatedResizeCursor(0);
+    case CropHandle::Rotate:
+        return cropRotateCursor();
+    case CropHandle::Move:
+        return dragging ? Qt::ClosedHandCursor : Qt::OpenHandCursor;
+    case CropHandle::Create:
+        return Qt::CrossCursor;
+    case CropHandle::None:
+        return Qt::ArrowCursor;
+    }
+    return Qt::ArrowCursor;
+}
+void ImageEditingCanvas::applyCropAngleConstraints() {
+    const QSize imgSize = m_document.image().size();
+    if (imgSize.isEmpty()) {
+        m_cropRect = {};
+        return;
+    }
+    const qreal imgW = imgSize.width();
+    const qreal imgH = imgSize.height();
+    QSizeF target = (m_cropBaseSize.isValid() && !m_cropBaseSize.isEmpty()) ? m_cropBaseSize
+                                                                            : m_cropRect.size();
+    if (!target.isValid() || target.isEmpty())
+        target = QSizeF(imgW, imgH);
+    const double rad = m_cropAngleDeg * (kCropPi / 180.0);
+    const double ca = std::abs(std::cos(rad));
+    const double sa = std::abs(std::sin(rad));
+    const double reachX0 = (target.width() * 0.5) * ca + (target.height() * 0.5) * sa;
+    const double reachY0 = (target.width() * 0.5) * sa + (target.height() * 0.5) * ca;
+    double scale = 1.0;
+    if (reachX0 > 1e-6)
+        scale = std::min(scale, (imgW * 0.5) / reachX0);
+    if (reachY0 > 1e-6)
+        scale = std::min(scale, (imgH * 0.5) / reachY0);
+    const qreal w = std::clamp(target.width() * scale, 1.0, imgW);
+    const qreal h = std::clamp(target.height() * scale, 1.0, imgH);
+    const double reachX = std::min<double>(imgW * 0.5, (w * 0.5) * ca + (h * 0.5) * sa);
+    const double reachY = std::min<double>(imgH * 0.5, (w * 0.5) * sa + (h * 0.5) * ca);
+    const QPointF curCenter =
+        m_cropRect.isValid() ? m_cropRect.center() : QPointF(imgW * 0.5, imgH * 0.5);
+    const qreal cx = std::clamp(curCenter.x(), reachX, std::max(reachX, imgW - reachX));
+    const qreal cy = std::clamp(curCenter.y(), reachY, std::max(reachY, imgH - reachY));
+    m_cropRect = QRectF(cx - w * 0.5, cy - h * 0.5, w, h);
+}
+void ImageEditingCanvas::initializeCropRect(std::optional<double> ratio) {
+    const QSize imgSize = m_document.image().size();
+    if (imgSize.isEmpty()) {
+        m_cropRect = {};
+        m_cropBaseSize = {};
+        notifyCropRectChanged();
+        return;
+    }
+    const qreal w = imgSize.width();
+    const qreal h = imgSize.height();
+    if (!ratio || *ratio <= 0.0) {
+        m_cropRect = QRectF(0.0, 0.0, w, h);
+    } else {
+        const qreal r = *ratio;
+        qreal cw = w;
+        qreal ch = cw / r;
+        if (ch > h) {
+            ch = h;
+            cw = ch * r;
+        }
+        cw = std::clamp(cw, 1.0, w);
+        ch = std::clamp(ch, 1.0, h);
+        m_cropRect = QRectF((w - cw) * 0.5, (h - ch) * 0.5, cw, ch);
+    }
+    m_cropBaseSize = m_cropRect.size();
+    if (m_cropAngleDeg != 0)
+        applyCropAngleConstraints();
+    notifyCropRectChanged();
+}
+void ImageEditingCanvas::notifyCropRectChanged() {
+    if (cropRectChanged && m_mode == Mode::CropRect)
+        cropRectChanged(cropPixelRect(), m_cropAngleDeg);
+}
+void ImageEditingCanvas::updateCropDrag(const QPointF& pixelPos, Qt::KeyboardModifiers modifiers) {
+    const QSize imgSize = m_document.image().size();
+    if (imgSize.isEmpty() || m_cropDragHandle == CropHandle::None)
+        return;
+    const qreal imgW = imgSize.width();
+    const qreal imgH = imgSize.height();
+    if (m_cropDragHandle == CropHandle::Rotate) {
+        const QPointF center = m_cropDragStartRect.center();
+        const double curAngle =
+            std::atan2(pixelPos.y() - center.y(), pixelPos.x() - center.x()) * (180.0 / kCropPi);
+        double dAngle = curAngle - m_cropDragStartPointerAngle;
+        while (dAngle > 180.0)
+            dAngle -= 360.0;
+        while (dAngle < -180.0)
+            dAngle += 360.0;
+        const double raw = m_cropDragStartAngle + dAngle;
+        const int snapped = modifiers.testFlag(Qt::ShiftModifier)
+                                ? normalizeCropDegrees180(qRound(raw / 15.0) * 15.0)
+                                : normalizeCropDegrees180(raw);
+        setCropAngleDegrees(snapped);
+        return;
+    }
+
+    const QPointF delta = pixelPos - m_cropDragStartPixel;
+    const bool altCenter = modifiers.testFlag(Qt::AltModifier);
+    std::optional<double> activeRatio = m_cropAspectRatio;
+    if (!activeRatio && modifiers.testFlag(Qt::ShiftModifier) &&
+        m_cropDragHandle != CropHandle::Move) {
+        if (m_cropDragRatio && *m_cropDragRatio > 0.0)
+            activeRatio = m_cropDragRatio;
+        else if (m_cropDragStartRect.height() > 0.0)
+            activeRatio = m_cropDragStartRect.width() / m_cropDragStartRect.height();
+    }
+
+    QRectF next = m_cropRect;
+    if (m_cropDragHandle == CropHandle::Move) {
+        const double rad = m_cropAngleDeg * (kCropPi / 180.0);
+        const double reachX = (m_cropDragStartRect.width() * 0.5) * std::abs(std::cos(rad)) +
+                              (m_cropDragStartRect.height() * 0.5) * std::abs(std::sin(rad));
+        const double reachY = (m_cropDragStartRect.width() * 0.5) * std::abs(std::sin(rad)) +
+                              (m_cropDragStartRect.height() * 0.5) * std::abs(std::cos(rad));
+        const qreal cx = std::clamp(m_cropDragStartRect.center().x() + delta.x(), reachX,
+                                    std::max(reachX, imgW - reachX));
+        const qreal cy = std::clamp(m_cropDragStartRect.center().y() + delta.y(), reachY,
+                                    std::max(reachY, imgH - reachY));
+        next =
+            QRectF(cx - m_cropDragStartRect.width() * 0.5, cy - m_cropDragStartRect.height() * 0.5,
+                   m_cropDragStartRect.width(), m_cropDragStartRect.height());
+    } else if (m_cropDragHandle == CropHandle::Create) {
+        m_cropAngleDeg = 0;
+        const QPointF anchor(std::clamp(m_cropDragStartPixel.x(), 0.0, imgW),
+                             std::clamp(m_cropDragStartPixel.y(), 0.0, imgH));
+        const QPointF cur(std::clamp(pixelPos.x(), 0.0, imgW), std::clamp(pixelPos.y(), 0.0, imgH));
+        if (std::hypot(cur.x() - anchor.x(), cur.y() - anchor.y()) < 2.0)
+            return;
+        if (altCenter) {
+            const qreal maxHalfW = std::min(anchor.x(), imgW - anchor.x());
+            const qreal maxHalfH = std::min(anchor.y(), imgH - anchor.y());
+            qreal halfW = std::clamp(std::abs(cur.x() - anchor.x()), 0.5, maxHalfW);
+            qreal halfH = std::clamp(std::abs(cur.y() - anchor.y()), 0.5, maxHalfH);
+            if (activeRatio && *activeRatio > 0.0) {
+                const qreal r = *activeRatio;
+                const qreal limW = std::min(maxHalfW, maxHalfH * r);
+                halfW = std::clamp(std::max(halfW, halfH * r), std::min(0.5, limW), limW);
+                halfH = halfW / r;
+            }
+            next = QRectF(anchor.x() - halfW, anchor.y() - halfH, halfW * 2.0, halfH * 2.0);
+        } else {
+            const qreal sx = cur.x() >= anchor.x() ? 1.0 : -1.0;
+            const qreal sy = cur.y() >= anchor.y() ? 1.0 : -1.0;
+            const qreal maxW = sx > 0 ? imgW - anchor.x() : anchor.x();
+            const qreal maxH = sy > 0 ? imgH - anchor.y() : anchor.y();
+            qreal w = std::clamp(std::abs(cur.x() - anchor.x()), 1.0, std::max(1.0, maxW));
+            qreal h = std::clamp(std::abs(cur.y() - anchor.y()), 1.0, std::max(1.0, maxH));
+            if (activeRatio && *activeRatio > 0.0) {
+                const qreal r = *activeRatio;
+                const qreal limW = std::min(maxW, maxH * r);
+                if (limW < 1.0)
+                    return;
+                w = std::clamp(std::max(w, h * r), std::min(1.0, limW), limW);
+                h = w / r;
+            }
+            const qreal x0 = sx > 0 ? anchor.x() : anchor.x() - w;
+            const qreal y0 = sy > 0 ? anchor.y() : anchor.y() - h;
+            next = QRectF(std::clamp(x0, 0.0, imgW - 1.0), std::clamp(y0, 0.0, imgH - 1.0),
+                          std::min(w, imgW), std::min(h, imgH));
+        }
+    } else if (m_cropAngleDeg != 0) {
+        const auto [u, v] = cropPixelAxes();
+        const qreal localDx = QPointF::dotProduct(delta, u);
+        const qreal localDy = QPointF::dotProduct(delta, v);
+        const bool hasLeft = m_cropDragHandle == CropHandle::TopLeft ||
+                             m_cropDragHandle == CropHandle::Left ||
+                             m_cropDragHandle == CropHandle::BottomLeft;
+        const bool hasRight = m_cropDragHandle == CropHandle::TopRight ||
+                              m_cropDragHandle == CropHandle::Right ||
+                              m_cropDragHandle == CropHandle::BottomRight;
+        const bool hasTop = m_cropDragHandle == CropHandle::TopLeft ||
+                            m_cropDragHandle == CropHandle::Top ||
+                            m_cropDragHandle == CropHandle::TopRight;
+        const bool hasBottom = m_cropDragHandle == CropHandle::BottomLeft ||
+                               m_cropDragHandle == CropHandle::Bottom ||
+                               m_cropDragHandle == CropHandle::BottomRight;
+        const qreal startW = m_cropDragStartRect.width();
+        const qreal startH = m_cropDragStartRect.height();
+        const QPointF startC = m_cropDragStartRect.center();
+        const auto commitAxis = [&](const QPointF& curC, const QSizeF& curSz, const QPointF& candC,
+                                    const QSizeF& candSz) {
+            const qreal t = cropMaxStepInsideImage(cropBoxCorners(curC, curSz, u, v),
+                                                   cropBoxCorners(candC, candSz, u, v), imgW, imgH);
+            const QPointF c = curC + (candC - curC) * t;
+            const QSizeF sz(curSz.width() + (candSz.width() - curSz.width()) * t,
+                            curSz.height() + (candSz.height() - curSz.height()) * t);
+            return std::pair{c, sz};
+        };
+        if (!activeRatio || *activeRatio <= 0.0) {
+            QPointF curC = startC;
+            QSizeF curSz = m_cropDragStartRect.size();
+            if (hasLeft || hasRight) {
+                const qreal sx = hasLeft ? -1.0 : 1.0;
+                const qreal candW =
+                    std::max<qreal>(1.0, startW + (altCenter ? 2.0 : 1.0) * sx * localDx);
+                const qreal dW = candW - curSz.width();
+                const QPointF candC = altCenter ? curC : curC + u * (sx * 0.5 * dW);
+                std::tie(curC, curSz) =
+                    commitAxis(curC, curSz, candC, QSizeF(candW, curSz.height()));
+            }
+            if (hasTop || hasBottom) {
+                const qreal sy = hasTop ? -1.0 : 1.0;
+                const qreal candH =
+                    std::max<qreal>(1.0, startH + (altCenter ? 2.0 : 1.0) * sy * localDy);
+                const qreal dH = candH - curSz.height();
+                const QPointF candC = altCenter ? curC : curC + v * (sy * 0.5 * dH);
+                std::tie(curC, curSz) =
+                    commitAxis(curC, curSz, candC, QSizeF(curSz.width(), candH));
+            }
+            next = QRectF(curC.x() - curSz.width() * 0.5, curC.y() - curSz.height() * 0.5,
+                          curSz.width(), curSz.height());
+        } else {
+            const qreal r = *activeRatio;
+            qreal candW = startW;
+            if ((hasLeft || hasRight) && (hasTop || hasBottom)) {
+                const qreal dx = (hasLeft ? -localDx : localDx) * (altCenter ? 2.0 : 1.0);
+                const qreal dy = (hasTop ? -localDy : localDy) * (altCenter ? 2.0 : 1.0);
+                candW = std::max({1.0, r, startW + dx, (startH + dy) * r});
+            } else if (hasLeft || hasRight) {
+                const qreal dx = (hasLeft ? -localDx : localDx) * (altCenter ? 2.0 : 1.0);
+                candW = std::max({1.0, r, startW + dx});
+            } else if (hasTop || hasBottom) {
+                const qreal dy = (hasTop ? -localDy : localDy) * (altCenter ? 2.0 : 1.0);
+                candW = std::max({1.0, r, (startH + dy) * r});
+            }
+            const qreal candH = candW / r;
+            const qreal ax = hasLeft ? -1.0 : (hasRight ? 1.0 : 0.0);
+            const qreal ay = hasTop ? -1.0 : (hasBottom ? 1.0 : 0.0);
+            const QPointF candC = altCenter ? startC
+                                            : startC + u * (ax * 0.5 * (candW - startW)) +
+                                                  v * (ay * 0.5 * (candH - startH));
+            const auto [c, sz] =
+                commitAxis(startC, QSizeF(startW, startH), candC, QSizeF(candW, candH));
+            next = QRectF(c.x() - sz.width() * 0.5, c.y() - sz.height() * 0.5, sz.width(),
+                          sz.height());
+        }
+    } else if (!activeRatio || *activeRatio <= 0.0) {
+        const bool hasLeft = m_cropDragHandle == CropHandle::TopLeft ||
+                             m_cropDragHandle == CropHandle::Left ||
+                             m_cropDragHandle == CropHandle::BottomLeft;
+        const bool hasRight = m_cropDragHandle == CropHandle::TopRight ||
+                              m_cropDragHandle == CropHandle::Right ||
+                              m_cropDragHandle == CropHandle::BottomRight;
+        const bool hasTop = m_cropDragHandle == CropHandle::TopLeft ||
+                            m_cropDragHandle == CropHandle::Top ||
+                            m_cropDragHandle == CropHandle::TopRight;
+        const bool hasBottom = m_cropDragHandle == CropHandle::BottomLeft ||
+                               m_cropDragHandle == CropHandle::Bottom ||
+                               m_cropDragHandle == CropHandle::BottomRight;
+        if (altCenter) {
+            const QPointF c = m_cropDragStartRect.center();
+            qreal halfW = m_cropDragStartRect.width() * 0.5;
+            qreal halfH = m_cropDragStartRect.height() * 0.5;
+            if (hasLeft)
+                halfW -= delta.x();
+            else if (hasRight)
+                halfW += delta.x();
+            if (hasTop)
+                halfH -= delta.y();
+            else if (hasBottom)
+                halfH += delta.y();
+            const qreal maxHalfW = std::min(c.x(), imgW - c.x());
+            const qreal maxHalfH = std::min(c.y(), imgH - c.y());
+            halfW = std::clamp(halfW, 0.5, std::max(0.5, maxHalfW));
+            halfH = std::clamp(halfH, 0.5, std::max(0.5, maxHalfH));
+            next = QRectF(c.x() - halfW, c.y() - halfH, halfW * 2.0, halfH * 2.0);
+        } else {
+            qreal l = m_cropDragStartRect.left();
+            qreal t = m_cropDragStartRect.top();
+            qreal r = m_cropDragStartRect.right();
+            qreal b = m_cropDragStartRect.bottom();
+            if (hasLeft)
+                l = std::clamp(l + delta.x(), 0.0, r - 1.0);
+            if (hasRight)
+                r = std::clamp(r + delta.x(), l + 1.0, imgW);
+            if (hasTop)
+                t = std::clamp(t + delta.y(), 0.0, b - 1.0);
+            if (hasBottom)
+                b = std::clamp(b + delta.y(), t + 1.0, imgH);
+            next = QRectF(l, t, r - l, b - t);
+        }
+    } else {
+        const qreal r = *activeRatio;
+        const QPointF c = m_cropDragStartRect.center();
+        if (m_cropDragHandle == CropHandle::TopLeft || m_cropDragHandle == CropHandle::TopRight ||
+            m_cropDragHandle == CropHandle::BottomRight ||
+            m_cropDragHandle == CropHandle::BottomLeft) {
+            const bool fromLeft = m_cropDragHandle == CropHandle::TopLeft ||
+                                  m_cropDragHandle == CropHandle::BottomLeft;
+            const bool fromTop =
+                m_cropDragHandle == CropHandle::TopLeft || m_cropDragHandle == CropHandle::TopRight;
+            if (altCenter) {
+                const qreal dx = fromLeft ? -delta.x() : delta.x();
+                const qreal dy = fromTop ? -delta.y() : delta.y();
+                const qreal maxHalfW = std::min(c.x(), imgW - c.x());
+                const qreal maxHalfH = std::min(c.y(), imgH - c.y());
+                const qreal limHalfW = std::min(maxHalfW, maxHalfH * r);
+                const qreal minHalfW = std::min(limHalfW, std::max(0.5, 0.5 * r));
+                const qreal candW = m_cropDragStartRect.width() * 0.5 + dx;
+                const qreal candH = (m_cropDragStartRect.height() * 0.5 + dy) * r;
+                const qreal halfW = std::clamp(std::max(candW, candH), minHalfW, limHalfW);
+                const qreal halfH = halfW / r;
+                next = QRectF(c.x() - halfW, c.y() - halfH, halfW * 2.0, halfH * 2.0);
+            } else {
+                const qreal ax =
+                    fromLeft ? m_cropDragStartRect.right() : m_cropDragStartRect.left();
+                const qreal ay = fromTop ? m_cropDragStartRect.bottom() : m_cropDragStartRect.top();
+                const qreal maxW = fromLeft ? ax : (imgW - ax);
+                const qreal maxH = fromTop ? ay : (imgH - ay);
+                const qreal limW = std::min(maxW, maxH * r);
+                const qreal minW = std::min(limW, std::max(1.0, r));
+                const qreal candW =
+                    m_cropDragStartRect.width() + (fromLeft ? -delta.x() : delta.x());
+                const qreal candH =
+                    (m_cropDragStartRect.height() + (fromTop ? -delta.y() : delta.y())) * r;
+                const qreal w = std::clamp(std::max(candW, candH), minW, limW);
+                const qreal h = w / r;
+                next = QRectF(fromLeft ? ax - w : ax, fromTop ? ay - h : ay, w, h);
+            }
+        } else if (m_cropDragHandle == CropHandle::Left || m_cropDragHandle == CropHandle::Right) {
+            const bool fromLeft = m_cropDragHandle == CropHandle::Left;
+            if (altCenter) {
+                const qreal maxW = std::min({2.0 * c.x(), 2.0 * (imgW - c.x()), imgH * r});
+                const qreal minW = std::min(maxW, std::max(1.0, r));
+                const qreal w = std::clamp(m_cropDragStartRect.width() +
+                                               2.0 * (fromLeft ? -delta.x() : delta.x()),
+                                           minW, maxW);
+                const qreal h = w / r;
+                const qreal y = std::clamp(c.y() - h * 0.5, 0.0, imgH - h);
+                next = QRectF(c.x() - w * 0.5, y, w, h);
+            } else {
+                const qreal ax =
+                    fromLeft ? m_cropDragStartRect.right() : m_cropDragStartRect.left();
+                const qreal maxW = std::min(fromLeft ? ax : (imgW - ax), imgH * r);
+                const qreal minW = std::min(maxW, std::max(1.0, r));
+                const qreal w = std::clamp(
+                    m_cropDragStartRect.width() + (fromLeft ? -delta.x() : delta.x()), minW, maxW);
+                const qreal h = w / r;
+                const qreal y = std::clamp(c.y() - h * 0.5, 0.0, imgH - h);
+                next = QRectF(fromLeft ? ax - w : ax, y, w, h);
+            }
+        } else {
+            const bool fromTop = m_cropDragHandle == CropHandle::Top;
+            if (altCenter) {
+                const qreal maxH = std::min({2.0 * c.y(), 2.0 * (imgH - c.y()), imgW / r});
+                const qreal minH = std::min(maxH, std::max(1.0, 1.0 / r));
+                const qreal h = std::clamp(m_cropDragStartRect.height() +
+                                               2.0 * (fromTop ? -delta.y() : delta.y()),
+                                           minH, maxH);
+                const qreal w = h * r;
+                const qreal x = std::clamp(c.x() - w * 0.5, 0.0, imgW - w);
+                next = QRectF(x, c.y() - h * 0.5, w, h);
+            } else {
+                const qreal ay = fromTop ? m_cropDragStartRect.bottom() : m_cropDragStartRect.top();
+                const qreal maxH = std::min(fromTop ? ay : (imgH - ay), imgW / r);
+                const qreal minH = std::min(maxH, std::max(1.0, 1.0 / r));
+                const qreal h = std::clamp(
+                    m_cropDragStartRect.height() + (fromTop ? -delta.y() : delta.y()), minH, maxH);
+                const qreal w = h * r;
+                const qreal x = std::clamp(c.x() - w * 0.5, 0.0, imgW - w);
+                next = QRectF(x, fromTop ? ay - h : ay, w, h);
+            }
+        }
+    }
+    if (next != m_cropRect) {
+        m_cropRect = next;
+        m_cropBaseSize = next.size();
+        notifyCropRectChanged();
+        update();
+    }
+}
 void ImageEditingCanvas::mousePressEvent(QMouseEvent* event) {
     const auto previous = cropPreviewDamage();
     m_pointerView = event->position();
@@ -109,6 +766,22 @@ void ImageEditingCanvas::mousePressEvent(QMouseEvent* event) {
         m_last = event->position();
         setCursor(Qt::ClosedHandCursor);
         update(previous);
+        event->accept();
+        return;
+    }
+    if (m_mode == Mode::CropRect && event->button() == Qt::LeftButton) {
+        m_cropDragHandle = cropHandleAt(event->position());
+        m_cropDragStartPixel = pixelAt(event->position());
+        m_cropDragStartRect = m_cropRect;
+        m_cropDragRatio = m_cropAspectRatio;
+        m_cropDragStartAngle = m_cropAngleDeg;
+        const QPointF c = m_cropRect.center();
+        m_cropDragStartPointerAngle =
+            std::atan2(m_cropDragStartPixel.y() - c.y(), m_cropDragStartPixel.x() - c.x()) *
+            (180.0 / kCropPi);
+        if (!m_cropDragRatio && m_cropDragStartRect.height() > 0.0)
+            m_cropDragRatio = m_cropDragStartRect.width() / m_cropDragStartRect.height();
+        setCursor(cropCursorForHandle(m_cropDragHandle, true));
         event->accept();
         return;
     }
@@ -138,6 +811,16 @@ void ImageEditingCanvas::mouseMoveEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
+    if (m_mode == Mode::CropRect) {
+        if (m_cropDragHandle != CropHandle::None) {
+            updateCropDrag(pixelAt(event->position()), event->modifiers());
+        } else {
+            m_cropHoverHandle = cropHandleAt(event->position());
+            setCursor(cropCursorForHandle(m_cropHoverHandle, false));
+        }
+        event->accept();
+        return;
+    }
     if (m_cropping) {
         m_lastPixel = pixelAt(event->position());
         update(QRegion(previous) | cropPreviewDamage());
@@ -156,8 +839,20 @@ void ImageEditingCanvas::mouseReleaseEvent(QMouseEvent* event) {
     m_pointerView = event->position();
     if (m_panning) {
         m_panning = false;
-        setCursor(m_mode == Mode::Pan ? Qt::OpenHandCursor : Qt::CrossCursor);
+        setCursor(m_mode == Mode::CropRect
+                      ? cropCursorForHandle(cropHandleAt(event->position()), false)
+                      : (m_mode == Mode::Pan ? Qt::OpenHandCursor : Qt::CrossCursor));
         update(QRegion(previous) | cropPreviewDamage());
+        event->accept();
+        return;
+    }
+    if (m_mode == Mode::CropRect && m_cropDragHandle != CropHandle::None &&
+        event->button() == Qt::LeftButton) {
+        m_cropDragHandle = CropHandle::None;
+        m_cropDragRatio.reset();
+        m_cropHoverHandle = cropHandleAt(event->position());
+        setCursor(cropCursorForHandle(m_cropHoverHandle, false));
+        update();
         event->accept();
         return;
     }
@@ -175,6 +870,19 @@ void ImageEditingCanvas::mouseReleaseEvent(QMouseEvent* event) {
         return;
     }
     SnowCanvasWidget::mouseReleaseEvent(event);
+}
+void ImageEditingCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (m_mode == Mode::CropRect && event->button() == Qt::LeftButton) {
+        const auto c = cropViewCorners();
+        QPolygonF poly;
+        poly << c[0] << c[1] << c[2] << c[3];
+        if (poly.containsPoint(event->position(), Qt::OddEvenFill)) {
+            commitCrop();
+            event->accept();
+            return;
+        }
+    }
+    SnowCanvasWidget::mouseDoubleClickEvent(event);
 }
 void ImageEditingCanvas::enterEvent(QEnterEvent* event) {
     const auto previous = cropPreviewDamage();
@@ -205,6 +913,18 @@ void ImageEditingCanvas::wheelEvent(QWheelEvent* event) {
     event->accept();
 }
 void ImageEditingCanvas::keyPressEvent(QKeyEvent* event) {
+    if (m_mode == Mode::CropRect) {
+        if (event->key() == Qt::Key_Escape) {
+            cancelCropRect();
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            commitCrop();
+            event->accept();
+            return;
+        }
+    }
     if (event->key() == Qt::Key_Escape && m_cropping) {
         const auto previous = cropPreviewDamage();
         m_cropping = false;
@@ -314,6 +1034,126 @@ QRect ImageEditingCanvas::cropPreviewDamage() const {
 }
 void ImageEditingCanvas::renderAfterCanvas(QPainter& painter,
                                            const SnowCanvasRenderContext& context) {
+    if (m_mode == Mode::CropRect && context.purpose == SnowCanvasRenderContext::Purpose::Widget &&
+        !m_cropRect.isEmpty()) {
+        const QSize imgSize = m_document.image().size();
+        const QRectF bounds = m_document.bounds();
+        if (!imgSize.isEmpty() && !bounds.isEmpty()) {
+            const auto [u, v] = cropPixelAxes();
+            const auto pxCorners = cropBoxCorners(m_cropRect.center(), m_cropRect.size(), u, v);
+            const qreal sx = bounds.width() / imgSize.width();
+            const qreal sy = bounds.height() / imgSize.height();
+            const auto toView = [&](const QPointF& px) {
+                return context.canvasToViewTransform.map(
+                    QPointF(bounds.x() + px.x() * sx, bounds.y() + px.y() * sy));
+            };
+            const QPointF tl = toView(pxCorners[0]);
+            const QPointF tr = toView(pxCorners[1]);
+            const QPointF br = toView(pxCorners[2]);
+            const QPointF bl = toView(pxCorners[3]);
+            QPolygonF poly;
+            poly << tl << tr << br << bl;
+            const qreal viewW = std::hypot(tr.x() - tl.x(), tr.y() - tl.y());
+            const qreal viewH = std::hypot(bl.x() - tl.x(), bl.y() - tl.y());
+            if (viewW >= 1.0 && viewH >= 1.0) {
+                const QPointF uV = (tr - tl) / viewW;
+                const QPointF vV = (bl - tl) / viewH;
+                painter.save();
+                // Photoshop-style outer dark scrim outside active crop box (supports rotation).
+                QPainterPath scrim;
+                scrim.setFillRule(Qt::OddEvenFill);
+                scrim.addRect(QRectF(rect()));
+                scrim.addPolygon(poly);
+                painter.fillPath(scrim, QColor(0, 0, 0, 145));
+
+                // Crisp 1px frame + Rule of Thirds 3x3 grid along crop frame axes.
+                painter.setRenderHint(QPainter::Antialiasing, m_cropAngleDeg != 0);
+                if (viewW >= 24.0 && viewH >= 24.0) {
+                    const QLineF gridLines[] = {
+                        {tl + (tr - tl) / 3.0, bl + (br - bl) / 3.0},
+                        {tl + (tr - tl) * (2.0 / 3.0), bl + (br - bl) * (2.0 / 3.0)},
+                        {tl + (bl - tl) / 3.0, tr + (br - tr) / 3.0},
+                        {tl + (bl - tl) * (2.0 / 3.0), tr + (br - tr) * (2.0 / 3.0)},
+                    };
+                    painter.setPen(QPen(QColor(0, 0, 0, 75), 1.0));
+                    painter.drawLines(gridLines, 4);
+                    painter.setPen(QPen(QColor(255, 255, 255, 135), 1.0));
+                    painter.drawLines(gridLines, 4);
+                }
+                painter.setPen(QPen(QColor(255, 255, 255, 230), 1.0));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawPolygon(poly);
+
+                // Photoshop-style L-shaped corner handles & edge midpoint bar handles.
+                const qreal arm = std::max(4.0, std::min({16.0, viewW * 0.28, viewH * 0.28}));
+                const qreal midH = std::max(4.0, std::min(18.0, viewW * 0.25));
+                const qreal midV = std::max(4.0, std::min(18.0, viewH * 0.25));
+                const QPointF topMid = (tl + tr) * 0.5;
+                const QPointF bottomMid = (bl + br) * 0.5;
+                const QPointF leftMid = (tl + bl) * 0.5;
+                const QPointF rightMid = (tr + br) * 0.5;
+                const auto drawHandles = [&](const QPen& pen) {
+                    painter.setPen(pen);
+                    const QPointF hTL[3] = {tl + vV * arm, tl, tl + uV * arm};
+                    const QPointF hTR[3] = {tr - uV * arm, tr, tr + vV * arm};
+                    const QPointF hBR[3] = {br - vV * arm, br, br - uV * arm};
+                    const QPointF hBL[3] = {bl + uV * arm, bl, bl - vV * arm};
+                    painter.drawPolyline(hTL, 3);
+                    painter.drawPolyline(hTR, 3);
+                    painter.drawPolyline(hBR, 3);
+                    painter.drawPolyline(hBL, 3);
+                    if (viewW >= 28.0) {
+                        painter.drawLine(topMid - uV * (midH * 0.5), topMid + uV * (midH * 0.5));
+                        painter.drawLine(bottomMid - uV * (midH * 0.5),
+                                         bottomMid + uV * (midH * 0.5));
+                    }
+                    if (viewH >= 28.0) {
+                        painter.drawLine(leftMid - vV * (midV * 0.5), leftMid + vV * (midV * 0.5));
+                        painter.drawLine(rightMid - vV * (midV * 0.5),
+                                         rightMid + vV * (midV * 0.5));
+                    }
+                };
+                painter.setRenderHint(QPainter::Antialiasing, true);
+                drawHandles(
+                    QPen(QColor(0, 0, 0, 170), 5.0, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+                drawHandles(QPen(QColor(255, 255, 255, 248), 3.0, Qt::SolidLine, Qt::SquareCap,
+                                 Qt::MiterJoin));
+
+                // Dimensions + exact 1-degree angle pill badge.
+                const QRect px = cropPixelRect();
+                const QString badgeText =
+                    m_cropAngleDeg == 0
+                        ? QStringLiteral("%1 × %2 px").arg(px.width()).arg(px.height())
+                        : QStringLiteral("%1 × %2 px · %3%4°")
+                              .arg(px.width())
+                              .arg(px.height())
+                              .arg(m_cropAngleDeg > 0 ? QStringLiteral("+") : QString())
+                              .arg(m_cropAngleDeg);
+                QFont badgeFont = painter.font();
+                badgeFont.setPixelSize(11);
+                badgeFont.setWeight(QFont::Medium);
+                painter.setFont(badgeFont);
+                const QSizeF textSz = QFontMetricsF(badgeFont).size(Qt::TextSingleLine, badgeText);
+                const QSizeF pillSz(textSz.width() + 14.0, textSz.height() + 6.0);
+                const QRectF bbox = poly.boundingRect();
+                const bool fitsInside = bbox.width() >= pillSz.width() + 16.0 &&
+                                        bbox.height() >= pillSz.height() + 16.0;
+                qreal bx = fitsInside ? (bbox.right() - pillSz.width() - 8.0)
+                                      : (bbox.center().x() - pillSz.width() * 0.5);
+                qreal by = fitsInside ? (bbox.top() + 8.0) : (bbox.top() - pillSz.height() - 6.0);
+                bx = std::clamp(bx, 8.0, std::max(8.0, width() - pillSz.width() - 8.0));
+                by = std::clamp(by, 8.0, std::max(8.0, height() - pillSz.height() - 8.0));
+                const QRectF pillRect(bx, by, pillSz.width(), pillSz.height());
+                painter.setPen(QPen(QColor(255, 255, 255, 50), 1.0));
+                painter.setBrush(QColor(20, 20, 20, 205));
+                painter.drawRoundedRect(pillRect, 4.0, 4.0);
+                painter.setPen(Qt::white);
+                painter.drawText(pillRect, Qt::AlignCenter, badgeText);
+                painter.restore();
+            }
+        }
+        return;
+    }
     int pixels = 0;
     const auto strip = cropStrip(&pixels);
     if (strip.isNull())

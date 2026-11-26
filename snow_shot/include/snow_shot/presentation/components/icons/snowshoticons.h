@@ -103,6 +103,7 @@ BrushPressureSensitive(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef CancelCrop(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef ColorPicker(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef CreditsCoin(const adqt::icons::IconColors& colors = {});
+[[nodiscard]] adqt::icons::IconRef Crop(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef CropHorizontal(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef CropVertical(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef Delete(const adqt::icons::IconColors& colors = {});

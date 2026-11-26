@@ -505,7 +505,7 @@ class ApplicationController::Impl {
         QObject::connect(&applicationStorage, &storage::ApplicationStorage::directoryChangeFinished,
                          &q, [this] {
                              const auto intent = shellLaunches.takeStorage();
-                             if (intent.paths.isEmpty())
+                             if (intent.isEmpty())
                                  return;
                              q.handleLaunchRequest(intent.replayArguments());
                          });
@@ -1005,6 +1005,8 @@ class ApplicationController::Impl {
         updates->clearRelaunchArguments();
         if (!intent.paths.isEmpty())
             pinShellFiles(intent.paths);
+        if (!intent.viewPaths.isEmpty())
+            viewShellFiles(intent.viewPaths);
         if (intent.foreground)
             showMainWindow();
 #endif
@@ -1036,12 +1038,23 @@ class ApplicationController::Impl {
             finished();
     }
 
+    void viewShellFiles(QStringList paths, std::function<void()> finished = {}) {
+        if (!actionGate.dispatch([this, paths = std::move(paths), finished]() mutable {
+                if (!paths.isEmpty())
+                    ensureImageEditingWindowCoordinator().presentFiles(std::move(paths));
+                if (finished)
+                    finished();
+            }) &&
+            finished)
+            finished();
+    }
+
     void preserveShellLaunchForUpdate(const ShellLaunchCoordinator::Request& request) {
         const auto intent = shellLaunches.retainUpdate(request);
         // Transport admission checked the cumulative intent before its receipt. Retain
         // accepted paths until helper acknowledgement or normal replay after failure.
-        updates->setRelaunchArguments(
-            update::startupUpdateRelaunchArguments(intent.foreground, intent.paths));
+        updates->setRelaunchArguments(update::startupUpdateRelaunchArguments(
+            intent.foreground, intent.paths, intent.viewPaths));
     }
 #endif
 
@@ -2291,7 +2304,8 @@ bool ApplicationController::acceptsLaunchRequest(const QStringList& arguments) c
             ShellLaunchCoordinator::parse(arguments), m_impl->updates->acceptsRelaunchArguments({}),
             [this](const auto& intent) {
                 return m_impl->updates->acceptsRelaunchArguments(
-                    update::startupUpdateRelaunchArguments(intent.foreground, intent.paths));
+                    update::startupUpdateRelaunchArguments(intent.foreground, intent.paths,
+                                                           intent.viewPaths));
             });
     }
 #else
@@ -2327,6 +2341,8 @@ void ApplicationController::handleLaunchRequest(const QStringList& arguments,
         } else {
             if (!request.paths.isEmpty())
                 m_impl->pinShellFiles(request.paths, completion.take());
+            if (!request.viewPaths.isEmpty())
+                m_impl->viewShellFiles(request.viewPaths, completion.take());
             if (request.foreground)
                 m_impl->showMainWindow();
         }

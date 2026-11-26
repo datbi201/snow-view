@@ -35,6 +35,8 @@
 #include "snow_shot/presentation/screenshotclipboardcontent.h"
 #include "snow_draw_engine_qt/snow_canvas_image.h"
 #include <QTextEdit>
+#include <QListWidget>
+#include <QScrollBar>
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QTranslator>
@@ -47,6 +49,8 @@
 #include <QPainter>
 #include "widgets/button.h"
 #include "widgets/color_picker.h"
+#include "widgets/input_number.h"
+#include "widgets/slider.h"
 #include "snow_shot/presentation/screenshotrecognitionsessioncontroller.h"
 #include "snow_shot/presentation/screenshotrecognitionwindow.h"
 #include "recognition_attachment_test_access.h"
@@ -428,9 +432,9 @@ void verifyScrollingSourceImport() {
     }
 }
 void mouse(QWidget* widget, QEvent::Type type, QPointF position, Qt::MouseButton button,
-           Qt::MouseButtons buttons) {
+           Qt::MouseButtons buttons, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
     QMouseEvent event(type, position, widget->mapToGlobal(position.toPoint()), button, buttons,
-                      Qt::NoModifier);
+                      modifiers);
     QApplication::sendEvent(widget, &event);
 }
 void verifyLinearPreviewScaling() {
@@ -894,28 +898,38 @@ void verifyCanvasToolbar(snow_shot::presentation::ImageEditingSource original) {
     QApplication::processEvents();
     auto* canvas = window.canvas();
     auto* editor = canvas->window();
-    auto* toolbar = canvas->findChild<QWidget*>(QStringLiteral("imageEditingCanvasToolbar"));
+    auto* toolbar = canvas->findChild<QWidget*>(QStringLiteral("snowViewImageToolbar"));
+    auto* crop = canvas->findChild<AdButton*>(QStringLiteral("snowViewCrop"));
+    auto* flipH = canvas->findChild<AdButton*>(QStringLiteral("snowViewFlipHorizontal"));
+    auto* adjust = canvas->findChild<AdButton*>(QStringLiteral("snowViewAdjust"));
     auto* fit = canvas->findChild<AdButton*>(QStringLiteral("imageEditingFit"));
     auto* actual = canvas->findChild<AdButton*>(QStringLiteral("imageEditingActualSize"));
     auto* hint = canvas->findChild<CanvasStatusReadout*>(QStringLiteral("imageEditingZoom"));
     require(hint && hint->isHidden() && !hint->dismissalTimer()->isActive(),
             "opening an image must fit it without flashing a scale readout");
-    require(toolbar && toolbar->parentWidget() == canvas && !toolbar->isWindow() &&
-                toolbar->isVisible() && fit && actual && fit->parentWidget() == toolbar &&
-                actual->parentWidget() == toolbar,
-            "zoom actions float together over the image canvas");
-    require(fit->text().isEmpty() && fit->iconRef().isValid() && fit->size() == QSize(26, 26) &&
-                fit->toolTip() == QStringLiteral("Fit image to window") &&
-                actual->text().isEmpty() && actual->iconRef().isValid() &&
-                actual->size() == fit->size() &&
-                actual->toolTip() == QStringLiteral("View at actual size (100%)"),
-            "zoom actions use the compact segmentation toolbar presentation");
-    for (auto* action : {fit, actual})
+    require(window.modal()->windowTitle() == QStringLiteral("Snow Shot"),
+            "editor window title defaults to Snow Shot");
+    require(
+        toolbar && toolbar->parentWidget() == canvas && !toolbar->isWindow() &&
+            toolbar->isVisible() && crop && flipH && adjust && fit && actual &&
+            crop->parentWidget() == toolbar && flipH->parentWidget() == toolbar &&
+            adjust->parentWidget() == toolbar && fit->parentWidget() == toolbar &&
+            actual->parentWidget() == toolbar,
+        "transform, crop, adjust, and zoom actions share one top toolbar over the image canvas");
+    require(
+        fit->text().isEmpty() && fit->iconRef().isValid() && fit->size() == QSize(32, 32) &&
+            fit->toolTip() == QStringLiteral("Fit image to window") && actual->text().isEmpty() &&
+            actual->iconRef().isValid() && actual->size() == fit->size() &&
+            actual->toolTip() == QStringLiteral("View at actual size (100%)") &&
+            crop->text().isEmpty() && crop->iconRef().isValid() && crop->size() == fit->size() &&
+            crop->isCheckable() && crop->toolTip() == QStringLiteral("Crop image (C)"),
+        "unified canvas actions use the enlarged 32x32 toolbar presentation");
+    for (auto* action : {crop, fit, actual})
         require(action->buttonStyle() == AdButton::ButtonStyle::Text &&
                     action->sizeClass() == AdButton::SizeClass::Small &&
                     action->focusPolicy() == Qt::StrongFocus &&
                     action->accessibleName() == action->toolTip(),
-                "canvas zoom actions retain keyboard focus and accessible labels");
+                "unified canvas actions retain keyboard focus and accessible labels");
     require(!window.palette()->window()->findChild<AdButton*>(QStringLiteral("imageEditingFit")) &&
                 !window.palette()->window()->findChild<AdButton*>(
                     QStringLiteral("imageEditingActualSize")),
@@ -926,8 +940,8 @@ void verifyCanvasToolbar(snow_shot::presentation::ImageEditingSource original) {
         require(canvas->rect().contains(toolbar->geometry()) &&
                     std::abs(QRectF(toolbar->geometry()).center().x() -
                              QRectF(canvas->rect()).center().x()) <= .5 &&
-                    canvas->height() - toolbar->geometry().bottom() - 1 == 16,
-                "zoom toolbar stays centered with the segmentation toolbar bottom inset");
+                    toolbar->geometry().top() == 16,
+                "unified image toolbar stays centered at the top inset");
     };
     for (const QSize size : {QSize(1100, 720), QSize(900, 600), QSize(540, 300)}) {
         editor->resize(size);
@@ -977,12 +991,16 @@ void verifyCanvasToolbar(snow_shot::presentation::ImageEditingSource original) {
     EditorTranslator translator;
     QApplication::installTranslator(&translator);
     QApplication::processEvents();
-    require(fit->toolTip() == QStringLiteral("[translated] Fit image to window") &&
+    require(window.modal()->windowTitle() == QStringLiteral("[translated] Snow Shot") &&
+                crop->toolTip() == QStringLiteral("[translated] Crop image (C)") &&
+                crop->accessibleName() == crop->toolTip() &&
+                fit->toolTip() == QStringLiteral("[translated] Fit image to window") &&
                 fit->accessibleName() == fit->toolTip() &&
                 actual->toolTip() == QStringLiteral("[translated] View at actual size (100%)") &&
                 actual->accessibleName() == actual->toolTip() && actual->text().isEmpty() &&
                 actual->size() == fit->size(),
-            "floating zoom labels retranslate while icon buttons retain their compact size");
+            "unified toolbar labels and Snow Shot window title retranslate while icon buttons "
+            "retain 32x32 size");
     requireAnchored();
     QApplication::removeTranslator(&translator);
     editor->resize(900, 600);
@@ -992,6 +1010,204 @@ void verifyCanvasToolbar(snow_shot::presentation::ImageEditingSource original) {
                 "save floating zoom toolbar visual inspection artifact");
     window.shutdown();
     require(!toolbar->isVisible(), "closing the editor hides the canvas zoom toolbar");
+}
+void verifyPhotoshopCropMode(snow_shot::presentation::ImageEditingSource original) {
+    using namespace snow_shot::presentation;
+    using adqt::widgets::AdButton;
+    using adqt::widgets::AdInputNumber;
+    using adqt::widgets::AdSlider;
+    ImageEditingWindow window;
+    window.present(original);
+    QApplication::processEvents();
+    auto* canvas = window.canvas();
+    auto* topToolbar = canvas->findChild<QWidget*>(QStringLiteral("snowViewImageToolbar"));
+    auto* cropButton = canvas->findChild<AdButton*>(QStringLiteral("snowViewCrop"));
+    auto* cropBar = canvas->findChild<QWidget*>(QStringLiteral("snowViewCropBar"));
+    auto* ratioFree = canvas->findChild<AdButton*>(QStringLiteral("snowViewCropFree"));
+    auto* ratio1x1 = canvas->findChild<AdButton*>(QStringLiteral("snowViewCrop1x1"));
+    auto* angleSlider = canvas->findChild<AdSlider*>(QStringLiteral("snowViewCropAngleSlider"));
+    auto* angleInput = canvas->findChild<AdInputNumber*>(QStringLiteral("snowViewCropAngleInput"));
+    auto* resetButton = canvas->findChild<AdButton*>(QStringLiteral("snowViewCropReset"));
+    auto* cancelButton = canvas->findChild<AdButton*>(QStringLiteral("snowViewCropCancel"));
+    auto* applyButton = canvas->findChild<AdButton*>(QStringLiteral("snowViewCropApply"));
+    auto* sizeLabel = canvas->findChild<QLabel*>(QStringLiteral("snowViewCropSizeLabel"));
+    require(topToolbar && cropButton && cropBar && ratioFree && ratio1x1 && angleSlider &&
+                angleInput && resetButton && cancelButton && applyButton && sizeLabel &&
+                !cropBar->isVisible(),
+            "Photoshop crop bar initializes hidden with all controls including angle adjustment");
+    require(qRound(angleInput->singleStep()) == 1 && qRound(angleInput->minimum()) == -180 &&
+                qRound(angleInput->maximum()) == 180 && qRound(angleSlider->minimum()) == -45 &&
+                qRound(angleSlider->maximum()) == 45,
+            "crop angle controls enforce 1-degree step precision");
+
+    cropButton->click();
+    QApplication::processEvents();
+    require(canvas->mode() == ImageEditingCanvas::Mode::CropRect && cropButton->isChecked() &&
+                cropBar->isVisible() && canvas->cropPixelRect() == original.image.rect() &&
+                canvas->cropAngleDegrees() == 0 &&
+                cropBar->geometry().top() > topToolbar->geometry().bottom(),
+            "entering Photoshop crop mode checks the button, reveals the crop bar below the top "
+            "toolbar, and selects full image at 0 degrees");
+
+    ratio1x1->click();
+    QApplication::processEvents();
+    const QRect square = canvas->cropPixelRect();
+    require(square.width() == 10 && square.height() == 10 && square.left() == 1,
+            "1:1 preset centers a maximal square inside 12x10 source");
+
+    angleInput->setValue(1);
+    QApplication::processEvents();
+    require(canvas->cropAngleDegrees() == 1 && qRound(angleSlider->value()) == 1,
+            "1-degree step input rotates the crop box by exactly 1 degree and syncs slider");
+    angleSlider->setValue(-5);
+    QApplication::processEvents();
+    require(canvas->cropAngleDegrees() == -5 && qRound(angleInput->value()) == -5,
+            "angle slider rotates the crop box by exact integer degrees and syncs numeric input");
+
+    resetButton->click();
+    QApplication::processEvents();
+    require(canvas->cropPixelRect() == original.image.rect() && canvas->cropAngleDegrees() == 0 &&
+                qRound(angleInput->value()) == 0 && ratioFree->isChecked(),
+            "reset restores Free preset, 0-degree angle, and full image crop box");
+
+    // Drag outside TopRight corner to rotate Photoshop crop frame clockwise by +7 degrees.
+    const auto viewPos = [&](QPointF pixelPos) {
+        const QPointF rel(pixelPos.x() / double(original.image.width()),
+                          pixelPos.y() / double(original.image.height()));
+        const QPointF canvasPt(original.canvasRect.left() + rel.x() * original.canvasRect.width(),
+                               original.canvasRect.top() + rel.y() * original.canvasRect.height());
+        return canvas->canvasToViewTransform().map(canvasPt);
+    };
+    const QPointF centerView = viewPos(QPointF(6.0, 5.0));
+    const QPointF rotStart = viewPos(QPointF(12.0, 0.0)) + QPointF(16.0, -16.0);
+    const QPointF rotEnd = centerView + QTransform().rotate(7.0).map(rotStart - centerView);
+    mouse(canvas, QEvent::MouseButtonPress, rotStart, Qt::LeftButton, Qt::LeftButton,
+          Qt::NoModifier);
+    mouse(canvas, QEvent::MouseMove, rotEnd, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    mouse(canvas, QEvent::MouseButtonRelease, rotEnd, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::processEvents();
+    require(canvas->cropAngleDegrees() == 7 && qRound(angleInput->value()) == 7 &&
+                qRound(angleSlider->value()) == 7,
+            "corner outer-ring drag rotates crop frame accurate to 1 degree");
+    angleInput->setValue(0);
+    QApplication::processEvents();
+    resetButton->click();
+    QApplication::processEvents();
+
+    // Drag the BottomRight handle inward while holding Alt for symmetric center scaling.
+    const QPointF brStart = viewPos(QPointF(12.0, 10.0));
+    const QPointF brTarget = viewPos(QPointF(10.0, 8.0));
+    mouse(canvas, QEvent::MouseButtonPress, brStart, Qt::LeftButton, Qt::LeftButton,
+          Qt::AltModifier);
+    mouse(canvas, QEvent::MouseMove, brTarget, Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+    mouse(canvas, QEvent::MouseButtonRelease, brTarget, Qt::LeftButton, Qt::NoButton,
+          Qt::AltModifier);
+    QApplication::processEvents();
+    const QRect altCropped = canvas->cropPixelRect();
+    require(altCropped.width() < 12 && altCropped.height() < 10 && altCropped.left() > 0 &&
+                altCropped.top() > 0,
+            "Alt+handle drag scales Photoshop crop box symmetrically from center");
+
+    QKeyEvent cancelKey(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(canvas, &cancelKey);
+    QApplication::processEvents();
+    require(canvas->mode() == ImageEditingCanvas::Mode::Pan && !cropBar->isVisible() &&
+                !cropButton->isChecked() && window.document()->image() == original.image &&
+                !window.dirty(),
+            "Esc cancels Photoshop crop without modifying the document");
+
+    cropButton->click();
+    QApplication::processEvents();
+    ratioFree->click();
+    mouse(canvas, QEvent::MouseButtonPress, brStart, Qt::LeftButton, Qt::LeftButton,
+          Qt::NoModifier);
+    mouse(canvas, QEvent::MouseMove, brTarget, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    mouse(canvas, QEvent::MouseButtonRelease, brTarget, Qt::LeftButton, Qt::NoButton,
+          Qt::NoModifier);
+    QApplication::processEvents();
+    const QRect expected = canvas->cropPixelRect();
+    require(expected.width() >= 9 && expected.width() <= 11 && expected.height() >= 7 &&
+                expected.height() <= 9,
+            "corner handle drag resizes crop box toward target pixel");
+    applyButton->click();
+    awaitCondition([&] { return canvas->mode() == ImageEditingCanvas::Mode::Pan; },
+                   "Apply exits Photoshop crop mode");
+    require(!cropBar->isVisible() && !cropButton->isChecked() && window.dirty() &&
+                window.document()->image().size() == expected.size(),
+            "Apply commits a rectangular Photoshop crop of exact dimensions");
+    for (int y = 0; y < expected.height(); ++y)
+        for (int x = 0; x < expected.width(); ++x)
+            require(window.document()->image().pixel(x, y) ==
+                        original.image.pixel(expected.left() + x, expected.top() + y),
+                    "cropped image preserves exact source pixels");
+    require(window.document()->undo() && window.document()->image() == original.image &&
+                !window.dirty(),
+            "Undo reverses Photoshop crop in a single history step");
+    require(window.document()->redo() && window.document()->image().size() == expected.size() &&
+                window.dirty(),
+            "Redo reapplies Photoshop crop");
+
+    // Verify committing a rotated crop (+5 degrees) straightens output and is undoable.
+    const QImage preRotated = window.document()->image();
+    cropButton->click();
+    QApplication::processEvents();
+    angleInput->setValue(5);
+    QApplication::processEvents();
+    const QSize rotatedSize = canvas->cropPixelRect().size();
+    require(rotatedSize.width() > 0 && rotatedSize.height() > 0 && canvas->cropAngleDegrees() == 5,
+            "5-degree rotation keeps rotated crop size valid inside bounds");
+    applyButton->click();
+    awaitCondition([&] { return canvas->mode() == ImageEditingCanvas::Mode::Pan; },
+                   "Apply commits rotated Photoshop crop");
+    require(window.dirty() && window.document()->image().size() == rotatedSize &&
+                window.document()->image() != preRotated,
+            "rotated crop produces expected output dimensions");
+    require(window.document()->undo() && window.document()->image() == preRotated,
+            "Undo restores prior image after rotated crop");
+    window.shutdown();
+}
+void verifySnowViewFilmstripAndWheel() {
+    using namespace snow_shot::presentation;
+    QTemporaryDir dir;
+    require(dir.isValid(), "filmstrip temp directory");
+    QStringList files;
+    for (int i = 0; i < 14; ++i) {
+        const QString path =
+            dir.filePath(QStringLiteral("%1_frame.%2")
+                             .arg(i, 2, 10, QLatin1Char('0'))
+                             .arg(i % 2 == 0 ? QStringLiteral("png") : QStringLiteral("jpg")));
+        QImage img(48, 32, QImage::Format_ARGB32);
+        img.fill(QColor((i * 31) % 255, (i * 67) % 255, (i * 97) % 255));
+        require(img.save(path, i % 2 == 0 ? "PNG" : "JPG"), "write filmstrip test image");
+        files.append(path);
+    }
+    ImageEditingWindow window;
+    window.presentFile(files.first());
+    QApplication::processEvents();
+    auto* editor = window.canvas()->window();
+    editor->resize(520, 500);
+    QApplication::processEvents();
+    auto* filmstrip = editor->findChild<QListWidget*>(QStringLiteral("snowViewFilmstrip"));
+    require(filmstrip && filmstrip->isVisible() && filmstrip->count() == 14,
+            "filmstrip displays folder siblings including jpg and png");
+    require(filmstrip->verticalScrollBarPolicy() == Qt::ScrollBarAlwaysOff &&
+                filmstrip->height() >= 86,
+            "filmstrip disables vertical scrollbar and reserves full thumbnail+label height");
+    awaitCondition(
+        [&] {
+            return filmstrip->item(0) && !filmstrip->item(0)->icon().isNull() &&
+                   filmstrip->item(1) && !filmstrip->item(1)->icon().isNull();
+        },
+        "async snow_image filmstrip decodes both PNG and JPG thumbnails");
+    auto* hbar = filmstrip->horizontalScrollBar();
+    require(hbar && hbar->maximum() > 0, "narrow window enables horizontal scrolling in filmstrip");
+    const int beforeScroll = hbar->value();
+    QWheelEvent wheel(QPointF(60, 30), filmstrip->viewport()->mapToGlobal(QPoint(60, 30)), {},
+                      QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(filmstrip->viewport(), &wheel);
+    require(hbar->value() > beforeScroll,
+            "vertical mouse wheel scrolls the filmstrip horizontally");
+    window.shutdown();
 }
 void verifyCropToolHighlight(snow_shot::presentation::ImageEditingWindow& window) {
     using namespace snow_shot::presentation;
@@ -1108,6 +1324,10 @@ void verifyEditingToolbar(snow_shot::presentation::ImageEditingWindow& window) {
     editor->resize(available.width() - 24, available.height() / 3);
     editor->move(available.topLeft() + QPoint(12, 12));
     QApplication::processEvents();
+    auto* surface = window.canvas()->parentWidget();
+    const auto surfaceRect = [&] {
+        return QRect(surface->mapToGlobal(QPoint(0, 0)), surface->size());
+    };
     const auto mainRect = [&] {
         auto* panel = window.palette()->mainPanel();
         return QRect(panel->mapToGlobal(QPoint()), panel->size());
@@ -1115,19 +1335,19 @@ void verifyEditingToolbar(snow_shot::presentation::ImageEditingWindow& window) {
     const auto occupiedRect = [&] {
         return toolbar->occupiedContentRect().translated(toolbar->contentPosition());
     };
-    const auto requireAnchored = [&](bool above = false) {
-        const auto frame = editor->frameGeometry();
+    const auto requireAnchored = [&](bool styleAbove = true) {
+        const QRect anchor = surfaceRect();
         const QRect main = mainRect();
-        require(main.right() == frame.right() + 1,
-                "visible editing toolbar aligns with the window right edge like a pin toolbar");
-        require(above ? main.bottom() == frame.top() - 5 : main.top() == frame.bottom() + 6,
-                "editing toolbar uses the pin toolbar gap without shadow or scroll padding");
+        require(std::abs(QRectF(main).center().x() - QRectF(anchor).center().x()) <= 1.0,
+                "visible editing toolbar centers horizontally over the preview surface");
+        require(anchor.bottom() - main.bottom() == 12,
+                "visible editing toolbar anchors above the filmstrip at the bottom of the surface");
         require(available.contains(occupiedRect()), "all editing toolbar panels fit on screen");
         if (window.palette()->styleToolbarVisible()) {
             auto* style = window.palette()->stylePanel();
             const QRect settings(style->mapToGlobal(QPoint()), style->size());
-            require(above ? settings.bottom() < main.top() : settings.top() > main.bottom(),
-                    "editing sub-toolbars expand away from the editor window");
+            require(styleAbove ? settings.bottom() < main.top() : settings.top() > main.bottom(),
+                    "editing sub-toolbars expand upward away from the filmstrip when room allows");
         }
     };
     requireAnchored();
@@ -1211,25 +1431,29 @@ void verifyEditingToolbar(snow_shot::presentation::ImageEditingWindow& window) {
     window.palette()->setActiveTool(Tool::Move);
     QApplication::processEvents();
 
-    // The collapsed row fits below; opening its settings must reconsider placement
-    // even though the shared native backing window retains exactly the same size.
-    const auto collapsed = toolbar->placementSnapshot().bottom;
-    const int depth =
-        collapsed.occupiedContentRect.bottom() - collapsed.mainToolbarContentRect.top();
-    const int desiredBottom = available.bottom() - depth - 6;
-    editor->move(editor->pos() + QPoint(0, desiredBottom - editor->frameGeometry().bottom()));
+    // When the editor is squished near the top edge so the collapsed row fits inside available
+    // bounds while the upward style panel would clip past the top, opening settings flips downward.
+    editor->resize(available.width() - 24, 120);
+    editor->move(available.left() + 12, available.top() + 8);
     QApplication::processEvents();
-    requireAnchored();
-    const auto below = mainRect();
+    const auto topSnap = toolbar->placementSnapshot().top;
+    const int collapsedHeight = topSnap.mainToolbarContentRect.height();
+    const int expandedDepth =
+        topSnap.mainToolbarContentRect.bottom() - topSnap.occupiedContentRect.top();
+    const int targetSurfaceBottom = available.top() + 12 + (collapsedHeight + expandedDepth) / 2;
+    editor->move(editor->pos() + QPoint(0, targetSurfaceBottom - surfaceRect().bottom()));
+    QApplication::processEvents();
+    requireAnchored(true);
+    const auto collapsedMain = mainRect();
     const auto fixedFrame = toolbar->size();
     window.palette()->setActiveTool(Tool::Shape);
     QApplication::processEvents();
-    requireAnchored(true);
+    requireAnchored(false);
     require(toolbar->size() == fixedFrame, "opening settings preserves the native toolbar frame");
     window.palette()->setActiveTool(Tool::Move);
     QApplication::processEvents();
-    requireAnchored();
-    require(mainRect() == below, "closing settings restores the preferred bottom placement");
+    requireAnchored(true);
+    require(mainRect() == collapsedMain, "closing settings restores the preferred upward anchor");
 
     // Clamp visible panels at monitor edges, including settings wider than a compact main row.
     const auto drawing = snow_shot::storage::ScreenshotToolbarSettings().layout(
@@ -1959,6 +2183,8 @@ void runImageEditingTests() {
         return;
     const auto original = source();
     verifyCanvasToolbar(original);
+    verifyPhotoshopCropMode(original);
+    verifySnowViewFilmstripAndWheel();
     verifyLoadingFeedback(original);
     verifyRecognitionFeedback(original);
     verifyRecognitionOverlayViewport();

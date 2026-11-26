@@ -157,16 +157,120 @@
     <context>
         <name>ImageEditingWindow</name>
         <message>
+            <source>%1 of %2</source>
+            <translation>%1 из %2</translation>
+        </message>
+        <message>
             <source>%1 px</source>
             <translation>%1 px</translation>
+        </message>
+        <message>
+            <source>Adjust brightness, contrast, saturation and sharpness</source>
+            <translation>Настроить яркость, контрастность, насыщенность и резкость</translation>
+        </message>
+        <message>
+            <source>Adjust image</source>
+            <translation>Настройка изображения</translation>
         </message>
         <message>
             <source>Allow Snow Shot to access Finder in System Settings &gt; Privacy &amp; Security &gt; Automation, then try again</source>
             <translation>Разрешите Snow Shot доступ к Finder в разделе «Системные настройки &gt; Конфиденциальность и безопасность &gt; Автоматизация», затем повторите попытку</translation>
         </message>
         <message>
+            <source>Apply</source>
+            <translation>Применить</translation>
+        </message>
+        <message>
+            <source>Apply crop (Enter)</source>
+            <translation>Применить обрезку (Enter)</translation>
+        </message>
+        <message>
+            <source>Auto enhance</source>
+            <translation>Автоулучшение</translation>
+        </message>
+        <message>
+            <source>Brightness</source>
+            <translation>Яркость</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отмена</translation>
+        </message>
+        <message>
+            <source>Cancel crop (Esc)</source>
+            <translation>Отменить обрезку (Esc)</translation>
+        </message>
+        <message>
+            <source>Contrast</source>
+            <translation>Контрастность</translation>
+        </message>
+        <message>
+            <source>Convert to grayscale</source>
+            <translation>Преобразовать в оттенки серого</translation>
+        </message>
+        <message>
             <source>Could not read the selected image files. Please try again</source>
             <translation>Не удалось прочитать выбранные файлы изображений. Повторите попытку</translation>
+        </message>
+        <message>
+            <source>Crop image (C)</source>
+            <translation>Обрезать изображение (C)</translation>
+        </message>
+        <message>
+            <source>Crop rotation angle (-180° to +180°, 1° step)</source>
+            <translation>Угол поворота рамки обрезки (от -180° до +180°, шаг 1°)</translation>
+        </message>
+        <message>
+            <source>Flip horizontally</source>
+            <translation>Отразить по горизонтали</translation>
+        </message>
+        <message>
+            <source>Flip vertically</source>
+            <translation>Отразить по вертикали</translation>
+        </message>
+        <message>
+            <source>Free</source>
+            <translation>Свободно</translation>
+        </message>
+        <message>
+            <source>Original</source>
+            <translation>Оригинал</translation>
+        </message>
+        <message>
+            <source>Remove the annotations before transforming the image, or export the flattened image and open it again</source>
+            <translation>Удалите аннотации перед преобразованием изображения или экспортируйте сведённое изображение и откройте его снова</translation>
+        </message>
+        <message>
+            <source>Reset crop box</source>
+            <translation>Сбросить рамку обрезки</translation>
+        </message>
+        <message>
+            <source>Rotate clockwise</source>
+            <translation>Повернуть по часовой стрелке</translation>
+        </message>
+        <message>
+            <source>Rotate counterclockwise</source>
+            <translation>Повернуть против часовой стрелки</translation>
+        </message>
+        <message>
+            <source>Saturation</source>
+            <translation>Насыщенность</translation>
+        </message>
+        <message>
+            <source>Sharpen</source>
+            <translation>Резкость</translation>
+        </message>
+        <message>
+            <source>Snow Shot</source>
+            <translation>Snow Shot</translation>
+        </message>
+        <message>
+            <source>Straighten or rotate crop frame (-45° to +45°, 1° step)</source>
+            <translation>Выровнять или повернуть рамку обрезки (от -45° до +45°, шаг 1°)</translation>
+        </message>
+        <message>
+            <source>Swap width and height ratio</source>
+            <translation>Поменять местами пропорции ширины и высоты</translation>
         </message>
         <message>
             <source>The editing content could not be prepared for export</source>

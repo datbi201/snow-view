@@ -10,7 +10,24 @@ struct ShellImageLaunchRequest {
     bool requested = false;
     bool valid = true;
     QStringList paths;
+    QStringList viewPaths;
 };
+
+[[nodiscard]] inline bool isValidShellImagePath(const QString& path) {
+    bool valid = !path.isEmpty() && !path.contains(u'"') && QDir::isAbsolutePath(path);
+#ifdef Q_OS_WIN
+    const QString normalized = QDir::fromNativeSeparators(path);
+    const bool driveAbsolute = normalized.size() >= 3 && normalized.at(0).toUpper() >= u'A' &&
+                               normalized.at(0).toUpper() <= u'Z' && normalized.at(1) == u':' &&
+                               normalized.at(2) == u'/';
+    const bool uncAbsolute = normalized.startsWith(QStringLiteral("//")) &&
+                             normalized.split(u'/', Qt::SkipEmptyParts).size() >= 2;
+    valid = valid && (driveAbsolute || uncAbsolute);
+#endif
+    for (const QChar character : path)
+        valid = valid && character.category() != QChar::Other_Control;
+    return valid;
+}
 
 // Explorer supplies a separate typed operand for each shell invocation. Repeated pairs also
 // preserve multiple requests across an updater relaunch without parsing a shell command string.
@@ -18,7 +35,10 @@ struct ShellImageLaunchRequest {
 parseShellImageLaunchRequest(const QStringList& arguments) {
     ShellImageLaunchRequest request;
     for (qsizetype index = 0; index < arguments.size(); ++index) {
-        if (arguments.at(index) != QStringLiteral("--edit-with-snow-shot"))
+        const QString& argument = arguments.at(index);
+        const bool isEdit = argument == QStringLiteral("--edit-with-snow-shot");
+        const bool isView = argument == QStringLiteral("--view-with-snow-shot");
+        if (!isEdit && !isView)
             continue;
         request.requested = true;
         if (++index >= arguments.size()) {
@@ -26,36 +46,38 @@ parseShellImageLaunchRequest(const QStringList& arguments) {
             break;
         }
         const QString& path = arguments.at(index);
-        bool valid = !path.isEmpty() && !path.contains(u'"') && QDir::isAbsolutePath(path);
-#ifdef Q_OS_WIN
-        const QString normalized = QDir::fromNativeSeparators(path);
-        const bool driveAbsolute = normalized.size() >= 3 && normalized.at(0).toUpper() >= u'A' &&
-                                   normalized.at(0).toUpper() <= u'Z' && normalized.at(1) == u':' &&
-                                   normalized.at(2) == u'/';
-        const bool uncAbsolute = normalized.startsWith(QStringLiteral("//")) &&
-                                 normalized.split(u'/', Qt::SkipEmptyParts).size() >= 2;
-        valid = valid && (driveAbsolute || uncAbsolute);
-#endif
-        for (const QChar character : path)
-            valid = valid && character.category() != QChar::Other_Control;
-        if (!valid) {
+        if (!isValidShellImagePath(path)) {
             request.valid = false;
             break;
         }
-        request.paths.append(path);
+        if (isView)
+            request.viewPaths.append(path);
+        else
+            request.paths.append(path);
     }
-    if (!request.valid)
+    if (!request.valid) {
         request.paths.clear();
+        request.viewPaths.clear();
+    }
     return request;
 }
 
-[[nodiscard]] inline QStringList shellImageLaunchArguments(const QStringList& paths) {
+[[nodiscard]] inline QStringList shellImageLaunchArgumentsForFlag(const QString& flag,
+                                                                  const QStringList& paths) {
     QStringList arguments;
     for (const QString& path : paths) {
-        arguments.append(QStringLiteral("--edit-with-snow-shot"));
+        arguments.append(flag);
         arguments.append(path);
     }
     return arguments;
+}
+
+[[nodiscard]] inline QStringList shellImageLaunchArguments(const QStringList& paths) {
+    return shellImageLaunchArgumentsForFlag(QStringLiteral("--edit-with-snow-shot"), paths);
+}
+
+[[nodiscard]] inline QStringList shellImageViewLaunchArguments(const QStringList& paths) {
+    return shellImageLaunchArgumentsForFlag(QStringLiteral("--view-with-snow-shot"), paths);
 }
 
 } // namespace snow_shot::app

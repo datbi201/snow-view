@@ -144,6 +144,7 @@ bool ImageEditingDocument::load(const ImageEditingSource& source) {
                              source.canvasRect.height() / m_image.height());
     m_samplingSources = exteriorSamplingSources(source.samplingSources, source.canvasRect);
     m_crops.clear();
+    m_baseEdits.clear();
     m_serial = 0;
     updateSources();
     m_runtime.seedSmartEraseSnapshot(source.smartErase);
@@ -208,6 +209,21 @@ bool ImageEditingDocument::applyCrop(Crop crop) {
 bool ImageEditingDocument::crop(CropAxis axis, int first, int last) {
     return applyCrop(prepareCrop(m_image, axis, first, last));
 }
+bool ImageEditingDocument::applyBaseImage(QImage image) {
+    if (image.isNull() || m_image.isNull() || image.cacheKey() == m_image.cacheKey())
+        return false;
+    const auto before = baseState();
+    const auto token = ++m_serial;
+    if (!m_runtime.commitHostHistoryState(token))
+        return false;
+    m_baseEdits.insert(token, BaseEditEntry{before, m_image, image});
+    m_image = std::move(image);
+    pruneCrops();
+    updateSources();
+    emit baseImageChanged();
+    emit changed();
+    return true;
+}
 ImageEditingDocument::HistoryTransition ImageEditingDocument::historyTransition(bool redo) const {
     HistoryTransition transition;
     transition.redo = redo;
@@ -216,17 +232,21 @@ ImageEditingDocument::HistoryTransition ImageEditingDocument::historyTransition(
     transition.revision = m_runtime.documentRevision();
     transition.sourceKey = m_image.cacheKey();
     if (transition.nextState != transition.state) {
-        const auto entry = m_crops.constFind(redo ? transition.nextState : transition.state);
+        const auto key = redo ? transition.nextState : transition.state;
+        const auto entry = m_crops.constFind(key);
         if (entry != m_crops.cend()) {
             transition.image = m_image;
             transition.crop = entry->crop;
+        } else if (const auto edit = m_baseEdits.constFind(key); edit != m_baseEdits.cend()) {
+            transition.baseEdit = true;
+            transition.image = redo ? edit->afterImage : edit->beforeImage;
         }
     }
     return transition;
 }
 void ImageEditingDocument::prepareHistoryTransition(HistoryTransition& transition,
                                                     const std::function<bool()>& cancelled) {
-    if (transition.image.isNull())
+    if (transition.image.isNull() || transition.baseEdit)
         return;
     transition.image = transition.redo ? removeStrip(transition.image, transition.crop, cancelled)
                                        : joinStrip(transition.image, transition.crop, cancelled);
@@ -257,15 +277,29 @@ void ImageEditingDocument::pruneCrops() {
     if (m_runtime.canRedo())
         return;
     QSet<quint64> retained;
-    for (quint64 state = baseState(); state && m_crops.contains(state);
-         state = m_crops.value(state).before)
+    for (quint64 state = baseState(); state;) {
+        if (const auto crop = m_crops.constFind(state); crop != m_crops.cend()) {
+            retained.insert(state);
+            state = crop->before;
+            continue;
+        }
+        const auto edit = m_baseEdits.constFind(state);
+        if (edit == m_baseEdits.cend())
+            break;
         retained.insert(state);
+        state = edit->before;
+    }
     // A host entry is published just before its Qt delta is installed.
-    if (baseState() && !m_crops.contains(baseState()))
+    if (baseState() && !retained.contains(baseState()))
         return;
     for (auto it = m_crops.begin(); it != m_crops.end();)
         if (!retained.contains(it.key()))
             it = m_crops.erase(it);
+        else
+            ++it;
+    for (auto it = m_baseEdits.begin(); it != m_baseEdits.end();)
+        if (!retained.contains(it.key()))
+            it = m_baseEdits.erase(it);
         else
             ++it;
 }

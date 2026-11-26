@@ -157,16 +157,120 @@
     <context>
         <name>ImageEditingWindow</name>
         <message>
+            <source>%1 of %2</source>
+            <translation>%1 of %2</translation>
+        </message>
+        <message>
             <source>%1 px</source>
             <translation>%1 px</translation>
+        </message>
+        <message>
+            <source>Adjust brightness, contrast, saturation and sharpness</source>
+            <translation>Adjust brightness, contrast, saturation and sharpness</translation>
+        </message>
+        <message>
+            <source>Adjust image</source>
+            <translation>Adjust image</translation>
         </message>
         <message>
             <source>Allow Snow Shot to access Finder in System Settings &gt; Privacy &amp; Security &gt; Automation, then try again</source>
             <translation>Allow Snow Shot to access Finder in System Settings &gt; Privacy &amp; Security &gt; Automation, then try again</translation>
         </message>
         <message>
+            <source>Apply</source>
+            <translation>Apply</translation>
+        </message>
+        <message>
+            <source>Apply crop (Enter)</source>
+            <translation>Apply crop (Enter)</translation>
+        </message>
+        <message>
+            <source>Auto enhance</source>
+            <translation>Auto enhance</translation>
+        </message>
+        <message>
+            <source>Brightness</source>
+            <translation>Brightness</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Cancel</translation>
+        </message>
+        <message>
+            <source>Cancel crop (Esc)</source>
+            <translation>Cancel crop (Esc)</translation>
+        </message>
+        <message>
+            <source>Contrast</source>
+            <translation>Contrast</translation>
+        </message>
+        <message>
+            <source>Convert to grayscale</source>
+            <translation>Convert to grayscale</translation>
+        </message>
+        <message>
             <source>Could not read the selected image files. Please try again</source>
             <translation>Could not read the selected image files. Please try again</translation>
+        </message>
+        <message>
+            <source>Crop image (C)</source>
+            <translation>Crop image (C)</translation>
+        </message>
+        <message>
+            <source>Crop rotation angle (-180° to +180°, 1° step)</source>
+            <translation>Crop rotation angle (-180° to +180°, 1° step)</translation>
+        </message>
+        <message>
+            <source>Flip horizontally</source>
+            <translation>Flip horizontally</translation>
+        </message>
+        <message>
+            <source>Flip vertically</source>
+            <translation>Flip vertically</translation>
+        </message>
+        <message>
+            <source>Free</source>
+            <translation>Free</translation>
+        </message>
+        <message>
+            <source>Original</source>
+            <translation>Original</translation>
+        </message>
+        <message>
+            <source>Remove the annotations before transforming the image, or export the flattened image and open it again</source>
+            <translation>Remove the annotations before transforming the image, or export the flattened image and open it again</translation>
+        </message>
+        <message>
+            <source>Reset crop box</source>
+            <translation>Reset crop box</translation>
+        </message>
+        <message>
+            <source>Rotate clockwise</source>
+            <translation>Rotate clockwise</translation>
+        </message>
+        <message>
+            <source>Rotate counterclockwise</source>
+            <translation>Rotate counterclockwise</translation>
+        </message>
+        <message>
+            <source>Saturation</source>
+            <translation>Saturation</translation>
+        </message>
+        <message>
+            <source>Sharpen</source>
+            <translation>Sharpen</translation>
+        </message>
+        <message>
+            <source>Snow Shot</source>
+            <translation>Snow Shot</translation>
+        </message>
+        <message>
+            <source>Straighten or rotate crop frame (-45° to +45°, 1° step)</source>
+            <translation>Straighten or rotate crop frame (-45° to +45°, 1° step)</translation>
+        </message>
+        <message>
+            <source>Swap width and height ratio</source>
+            <translation>Swap width and height ratio</translation>
         </message>
         <message>
             <source>The editing content could not be prepared for export</source>

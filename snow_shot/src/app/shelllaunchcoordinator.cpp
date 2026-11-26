@@ -10,6 +10,7 @@ namespace snow_shot::app {
 
 QStringList ShellLaunchCoordinator::Intent::replayArguments() const {
     auto arguments = shellImageLaunchArguments(paths);
+    arguments.append(shellImageViewLaunchArguments(viewPaths));
     if (foreground)
         arguments.append(QStringLiteral("--show-main-window"));
     return arguments;
@@ -32,6 +33,13 @@ ShellLaunchCoordinator::Request ShellLaunchCoordinator::parse(const QStringList&
         else
             request.unsupportedPaths.append(path);
     }
+    const auto supportedImages = image::supportedImageFileExtensions();
+    for (const auto& path : files.viewPaths) {
+        if (supportedImages.contains(QFileInfo(path).suffix().toLower()))
+            request.viewPaths.append(path);
+        else
+            request.unsupportedPaths.append(path);
+    }
     return request;
 }
 
@@ -39,6 +47,7 @@ ShellLaunchCoordinator::Intent
 ShellLaunchCoordinator::updateCandidate(const Request& request) const {
     auto candidate = m_update;
     candidate.paths.append(request.paths);
+    candidate.viewPaths.append(request.viewPaths);
     candidate.foreground = candidate.foreground || request.foreground;
     return candidate;
 }
@@ -57,6 +66,7 @@ ShellLaunchCoordinator::Intent ShellLaunchCoordinator::retainUpdate(const Reques
 
 void ShellLaunchCoordinator::retainStorage(const Request& request) {
     m_storage.paths.append(request.paths);
+    m_storage.viewPaths.append(request.viewPaths);
     m_storage.foreground = m_storage.foreground || request.foreground;
 }
 

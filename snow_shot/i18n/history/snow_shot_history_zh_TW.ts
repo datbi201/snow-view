@@ -157,16 +157,120 @@
     <context>
         <name>ImageEditingWindow</name>
         <message>
+            <source>%1 of %2</source>
+            <translation>%1 / %2</translation>
+        </message>
+        <message>
             <source>%1 px</source>
             <translation>%1 像素</translation>
+        </message>
+        <message>
+            <source>Adjust brightness, contrast, saturation and sharpness</source>
+            <translation>調整亮度、對比度、飽和度和銳利度</translation>
+        </message>
+        <message>
+            <source>Adjust image</source>
+            <translation>調整影像</translation>
         </message>
         <message>
             <source>Allow Snow Shot to access Finder in System Settings &gt; Privacy &amp; Security &gt; Automation, then try again</source>
             <translation>請在「系統設定 &gt; 隱私權與安全性 &gt; 自動化」中允許 Snow Shot 存取 Finder，然後再試一次</translation>
         </message>
         <message>
+            <source>Apply</source>
+            <translation>套用</translation>
+        </message>
+        <message>
+            <source>Apply crop (Enter)</source>
+            <translation>套用裁切 (Enter)</translation>
+        </message>
+        <message>
+            <source>Auto enhance</source>
+            <translation>自動增強</translation>
+        </message>
+        <message>
+            <source>Brightness</source>
+            <translation>亮度</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>取消</translation>
+        </message>
+        <message>
+            <source>Cancel crop (Esc)</source>
+            <translation>取消裁切 (Esc)</translation>
+        </message>
+        <message>
+            <source>Contrast</source>
+            <translation>對比度</translation>
+        </message>
+        <message>
+            <source>Convert to grayscale</source>
+            <translation>轉換為灰階</translation>
+        </message>
+        <message>
             <source>Could not read the selected image files. Please try again</source>
             <translation>無法讀取選取的影像檔案，請重試</translation>
+        </message>
+        <message>
+            <source>Crop image (C)</source>
+            <translation>裁切影像 (C)</translation>
+        </message>
+        <message>
+            <source>Crop rotation angle (-180° to +180°, 1° step)</source>
+            <translation>裁切旋轉角度（-180° 至 +180°，步長 1°）</translation>
+        </message>
+        <message>
+            <source>Flip horizontally</source>
+            <translation>水平翻轉</translation>
+        </message>
+        <message>
+            <source>Flip vertically</source>
+            <translation>垂直翻轉</translation>
+        </message>
+        <message>
+            <source>Free</source>
+            <translation>自由</translation>
+        </message>
+        <message>
+            <source>Original</source>
+            <translation>原始比例</translation>
+        </message>
+        <message>
+            <source>Remove the annotations before transforming the image, or export the flattened image and open it again</source>
+            <translation>請先刪除標註再變換影像，或匯出合併後的影像並重新開啟</translation>
+        </message>
+        <message>
+            <source>Reset crop box</source>
+            <translation>重設裁切框</translation>
+        </message>
+        <message>
+            <source>Rotate clockwise</source>
+            <translation>順時針旋轉</translation>
+        </message>
+        <message>
+            <source>Rotate counterclockwise</source>
+            <translation>逆時針旋轉</translation>
+        </message>
+        <message>
+            <source>Saturation</source>
+            <translation>飽和度</translation>
+        </message>
+        <message>
+            <source>Sharpen</source>
+            <translation>銳化</translation>
+        </message>
+        <message>
+            <source>Snow Shot</source>
+            <translation>Snow Shot</translation>
+        </message>
+        <message>
+            <source>Straighten or rotate crop frame (-45° to +45°, 1° step)</source>
+            <translation>拉直或旋轉裁切框（-45° 至 +45°，步長 1°）</translation>
+        </message>
+        <message>
+            <source>Swap width and height ratio</source>
+            <translation>交換寬高比例</translation>
         </message>
         <message>
             <source>The editing content could not be prepared for export</source>

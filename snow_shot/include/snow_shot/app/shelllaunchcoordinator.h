@@ -19,12 +19,17 @@ class ShellLaunchCoordinator final {
         bool autostart = false;
         bool foreground = false;
         QStringList paths;
+        QStringList viewPaths;
         QStringList unsupportedPaths;
     };
     struct Intent {
         QStringList paths;
+        QStringList viewPaths;
         bool foreground = false;
 
+        [[nodiscard]] bool isEmpty() const {
+            return paths.isEmpty() && viewPaths.isEmpty();
+        }
         // Normal replay arguments omit updater-private flags. An empty intent is not a launch.
         [[nodiscard]] QStringList replayArguments() const;
     };

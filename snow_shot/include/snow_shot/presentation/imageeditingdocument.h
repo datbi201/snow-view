@@ -77,13 +77,17 @@ class ImageEditingDocument final : public QObject {
         return m_runtime.hostHistoryState();
     }
     bool retainsBaseHistoryState(quint64 state) const {
-        return state == 0 || state == baseState() || m_crops.contains(state);
+        return state == 0 || state == baseState() || m_crops.contains(state) ||
+               m_baseEdits.contains(state);
     }
     QList<SnowCanvasBaseImageSource> baseImageSources() const;
     static Crop prepareCrop(const QImage& image, CropAxis axis, int first, int last,
                             const std::function<bool()>& cancelled = {});
     bool applyCrop(Crop crop);
     bool crop(CropAxis axis, int first, int last);
+    // SnowView: replace the whole base raster (flip, rotate, color adjust) as one
+    // undoable history step, chained with crops in the same host history sequence.
+    bool applyBaseImage(QImage image);
     struct HistoryTransition {
         bool redo = false;
         quint64 state = 0;
@@ -92,6 +96,9 @@ class ImageEditingDocument final : public QObject {
         qint64 sourceKey = 0;
         QImage image;
         Crop crop;
+        // SnowView: true when this transition restores a whole-raster base edit;
+        // `image` then already holds the final raster for the target state.
+        bool baseEdit = false;
     };
     HistoryTransition historyTransition(bool redo) const;
     static void prepareHistoryTransition(HistoryTransition& transition,
@@ -114,6 +121,13 @@ class ImageEditingDocument final : public QObject {
         quint64 before = 0;
         Crop crop;
     };
+    // SnowView: a whole-raster base edit kept as before/after images so undo and
+    // redo restore exact pixels without an inverse operation.
+    struct BaseEditEntry {
+        quint64 before = 0;
+        QImage beforeImage;
+        QImage afterImage;
+    };
     bool travel(bool redo);
     void updateSources();
     void pruneCrops();
@@ -124,6 +138,7 @@ class ImageEditingDocument final : public QObject {
     QPointF m_origin;
     QSizeF m_unitsPerPixel;
     QHash<quint64, CropEntry> m_crops;
+    QHash<quint64, BaseEditEntry> m_baseEdits;
     quint64 m_serial = 0;
     QByteArray m_saved;
     mutable QByteArray m_checkpointContent;

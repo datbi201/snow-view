@@ -511,6 +511,14 @@
     },
     {
       "variant": "outlined",
+      "symbol": "Crop",
+      "name": "crop",
+      "source": "../src/presentation/components/icons/resources/crop.svg",
+      "colorModel": "monochrome",
+      "fit": "contain"
+    },
+    {
+      "variant": "outlined",
       "symbol": "CropHorizontal",
       "name": "crop-horizontal",
       "source": "../src/presentation/components/icons/resources/crop-horizontal.svg",

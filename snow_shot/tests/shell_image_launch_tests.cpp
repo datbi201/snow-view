@@ -59,6 +59,24 @@ void launchArguments() {
     require(parseShellImageLaunchRequest(shellImageLaunchArguments(windowsPaths)).paths ==
                 windowsPaths,
             "drive and UNC operands survive forwarding without command-string parsing");
+    const auto viewArguments = shellImageViewLaunchArguments(windowsPaths);
+    const auto viewParsed = parseShellImageLaunchRequest(viewArguments);
+    require(viewParsed.requested && viewParsed.valid && viewParsed.paths.isEmpty() &&
+                viewParsed.viewPaths == windowsPaths,
+            "view launch flag routes image operands separately from pin operands");
+    auto mixedArguments = shellImageLaunchArguments({windowsPaths.first()});
+    mixedArguments.append(shellImageViewLaunchArguments({windowsPaths.last()}));
+    const auto mixedParsed = parseShellImageLaunchRequest(mixedArguments);
+    require(mixedParsed.requested && mixedParsed.valid &&
+                mixedParsed.paths == QStringList{windowsPaths.first()} &&
+                mixedParsed.viewPaths == QStringList{windowsPaths.last()},
+            "mixed edit and view flags keep separate operand lists in one launch");
+    const QString viewFlag = QStringLiteral("--view-with-snow-shot");
+    require(parseShellImageLaunchRequest({viewFlag}).requested &&
+                !parseShellImageLaunchRequest({viewFlag}).valid &&
+                parseShellImageLaunchRequest({viewFlag, QStringLiteral("relative.png")})
+                    .viewPaths.isEmpty(),
+            "malformed view shell operands reject the whole request");
 #endif
 }
 
