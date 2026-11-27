@@ -74,7 +74,11 @@ ImageEditingCanvas::ImageEditingCanvas(ImageEditingDocument& document, QWidget* 
     m_zoomReadout->setObjectName(QStringLiteral("imageEditingZoom"));
     m_zoomReadout->layoutIn(rect());
     connect(&document, &ImageEditingDocument::baseImageChanged, this, [this] { syncImage(); });
-    connect(&document, &ImageEditingDocument::previewImageChanged, this, [this] { update(); });
+    connect(&document, &ImageEditingDocument::previewImageChanged, this, [this] {
+        if (m_document.runtime().hasDocumentContent())
+            setBaseImageSources(baseImageSources());
+        update();
+    });
 }
 ImageEditingCanvas::~ImageEditingCanvas() {
     setCustomRenderer(nullptr);
@@ -824,7 +828,10 @@ std::uint64_t ImageEditingCanvas::contentRevision() const {
     return static_cast<std::uint64_t>(m_document.displayImage().cacheKey());
 }
 QList<SnowCanvasBaseImageSource> ImageEditingCanvas::baseImageSources() const {
-    return m_document.baseImageSources();
+    auto sources = m_document.baseImageSources();
+    if (m_document.hasPreviewImage() && !sources.isEmpty())
+        sources.last().image = m_document.displayImage();
+    return sources;
 }
 std::optional<SnowCanvasFilterRenderReference> ImageEditingCanvas::filterRenderReference() const {
     if (m_document.bounds().isEmpty())

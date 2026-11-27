@@ -313,8 +313,64 @@
             <translation>Sharpen</translation>
         </message>
         <message>
+            <source>Apply filter (Enter)</source>
+            <translation>Apply filter (Enter)</translation>
+        </message>
+        <message>
+            <source>B&amp;W Contrast</source>
+            <translation>B&amp;W Contrast</translation>
+        </message>
+        <message>
+            <source>Cancel filter (Esc)</source>
+            <translation>Cancel filter (Esc)</translation>
+        </message>
+        <message>
+            <source>Color filters</source>
+            <translation>Color filters</translation>
+        </message>
+        <message>
+            <source>Cool</source>
+            <translation>Cool</translation>
+        </message>
+        <message>
+            <source>Fade</source>
+            <translation>Fade</translation>
+        </message>
+        <message>
+            <source>Grayscale</source>
+            <translation>Grayscale</translation>
+        </message>
+        <message>
+            <source>Intensity</source>
+            <translation>Intensity</translation>
+        </message>
+        <message>
+            <source>Negative</source>
+            <translation>Negative</translation>
+        </message>
+        <message>
+            <source>Nostalgia</source>
+            <translation>Nostalgia</translation>
+        </message>
+        <message>
+            <source>Sepia</source>
+            <translation>Sepia</translation>
+        </message>
+        <message>
             <source>Snow Shot</source>
             <translation>Snow Shot</translation>
+        </message>
+        <message>
+            <source>Vintage</source>
+            <translation>Vintage</translation>
+        </message>
+        <message>
+            <source>Vivid</source>
+            <translation>Vivid</translation>
+        </message>
+        <message>
+            <source>Warm</source>
+            <translation>Warm</translation>
         </message>
         <message>
             <source>Swap ratio</source>

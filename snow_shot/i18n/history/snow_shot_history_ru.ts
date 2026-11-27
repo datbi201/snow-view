@@ -313,8 +313,64 @@
             <translation>Резкость</translation>
         </message>
         <message>
+            <source>Apply filter (Enter)</source>
+            <translation>Применить фильтр (Enter)</translation>
+        </message>
+        <message>
+            <source>B&amp;W Contrast</source>
+            <translation>Ч/Б контраст</translation>
+        </message>
+        <message>
+            <source>Cancel filter (Esc)</source>
+            <translation>Отменить фильтр (Esc)</translation>
+        </message>
+        <message>
+            <source>Color filters</source>
+            <translation>Цветовые фильтры</translation>
+        </message>
+        <message>
+            <source>Cool</source>
+            <translation>Холодный</translation>
+        </message>
+        <message>
+            <source>Fade</source>
+            <translation>Выцветание</translation>
+        </message>
+        <message>
+            <source>Grayscale</source>
+            <translation>Оттенки серого</translation>
+        </message>
+        <message>
+            <source>Intensity</source>
+            <translation>Интенсивность</translation>
+        </message>
+        <message>
+            <source>Negative</source>
+            <translation>Негатив</translation>
+        </message>
+        <message>
+            <source>Nostalgia</source>
+            <translation>Ностальгия</translation>
+        </message>
+        <message>
+            <source>Sepia</source>
+            <translation>Сепия</translation>
+        </message>
+        <message>
             <source>Snow Shot</source>
             <translation>Snow Shot</translation>
+        </message>
+        <message>
+            <source>Vintage</source>
+            <translation>Винтаж</translation>
+        </message>
+        <message>
+            <source>Vivid</source>
+            <translation>Яркий</translation>
+        </message>
+        <message>
+            <source>Warm</source>
+            <translation>Тёплый</translation>
         </message>
         <message>
             <source>Swap ratio</source>

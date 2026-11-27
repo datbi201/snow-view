@@ -917,13 +917,13 @@ void verifyCanvasToolbar(snow_shot::presentation::ImageEditingSource original) {
             actual->parentWidget() == toolbar,
         "transform, crop, adjust, and zoom actions share one top toolbar over the image canvas");
     require(
-        fit->text().isEmpty() && fit->iconRef().isValid() && fit->size() == QSize(32, 32) &&
+        fit->text().isEmpty() && fit->iconRef().isValid() && fit->size() == QSize(48, 48) &&
             fit->toolTip() == QStringLiteral("Fit image to window") && actual->text().isEmpty() &&
             actual->iconRef().isValid() && actual->size() == fit->size() &&
             actual->toolTip() == QStringLiteral("View at actual size (100%)") &&
             crop->text().isEmpty() && crop->iconRef().isValid() && crop->size() == fit->size() &&
             crop->isCheckable() && crop->toolTip() == QStringLiteral("Crop image (C)"),
-        "unified canvas actions use the enlarged 32x32 toolbar presentation");
+        "unified canvas actions use the enlarged 48x48 toolbar presentation");
     for (auto* action : {crop, fit, actual})
         require(action->buttonStyle() == AdButton::ButtonStyle::Text &&
                     action->sizeClass() == AdButton::SizeClass::Small &&
@@ -943,7 +943,7 @@ void verifyCanvasToolbar(snow_shot::presentation::ImageEditingSource original) {
                     toolbar->geometry().top() == 16,
                 "unified image toolbar stays centered at the top inset");
     };
-    for (const QSize size : {QSize(1100, 720), QSize(900, 600), QSize(540, 300)}) {
+    for (const QSize size : {QSize(1100, 720), QSize(900, 600), QSize(640, 420)}) {
         editor->resize(size);
         QApplication::processEvents();
         requireAnchored();
@@ -1000,7 +1000,7 @@ void verifyCanvasToolbar(snow_shot::presentation::ImageEditingSource original) {
                 actual->accessibleName() == actual->toolTip() && actual->text().isEmpty() &&
                 actual->size() == fit->size(),
             "unified toolbar labels and Snow Shot window title retranslate while icon buttons "
-            "retain 32x32 size");
+            "retain 48x48 size");
     requireAnchored();
     QApplication::removeTranslator(&translator);
     editor->resize(900, 600);
@@ -1366,6 +1366,138 @@ void verifyAdjustTaskPaneLivePreview(snow_shot::presentation::ImageEditingSource
     require(window.document()->undo() && window.document()->image() == original.image &&
                 !window.dirty(),
             "Undo reverses committed Adjust edit cleanly");
+
+    // Color & lightness edits apply directly under annotations without flattening or prompting.
+    const QByteArray tx = window.document()->runtime().applyAnnotationTransaction(QByteArrayLiteral(
+        R"({"version":1,"operations":[{"type":"rectangle","bounds":[1,1,4,4]}]})"));
+    require(!tx.isEmpty() && window.document()->runtime().hasDocumentContent(),
+            "added live annotation before non-flattening Adjust");
+    adjustButton->click();
+    QApplication::processEvents();
+    require(
+        !window.findChild<adqt::widgets::AdModal*>(QStringLiteral("snowViewFlattenConfirmModal")) &&
+            taskPane->isVisible() && adjustPane->isVisible(),
+        "Adjust opens immediately beneath annotations without flatten confirmation modal");
+    brightness->setValue(40);
+    awaitCondition([&] { return window.document()->hasPreviewImage(); },
+                   "Adjust live preview activates beneath live annotations");
+    applyBtn->click();
+    QApplication::processEvents();
+    require(window.document()->image() != original.image &&
+                window.document()->runtime().hasDocumentContent(),
+            "Adjust updates base image while keeping vector annotations intact");
+    auto* autoEnhance = canvas->findChild<AdButton*>(QStringLiteral("snowViewAutoEnhance"));
+    require(autoEnhance, "Auto enhance action exists on enlarged image toolbar");
+    const QImage preEnhance = window.document()->image();
+    autoEnhance->click();
+    QApplication::processEvents();
+    require(
+        !window.findChild<adqt::widgets::AdModal*>(QStringLiteral("snowViewFlattenConfirmModal")) &&
+            window.document()->runtime().hasDocumentContent() &&
+            window.document()->image() != preEnhance,
+        "Auto enhance adjusts base image under annotations without flattening");
+    window.shutdown();
+}
+void verifyColorFilterPresetsAndEdgeSnapping(snow_shot::presentation::ImageEditingSource original) {
+    using namespace snow_shot::presentation;
+    using adqt::widgets::AdButton;
+    using adqt::widgets::AdSlider;
+    ImageEditingWindow window;
+    window.present(original);
+    QApplication::processEvents();
+    auto* canvas = window.canvas();
+    auto* editorWindow = canvas->window();
+    auto* filterBtn = canvas->findChild<AdButton*>(QStringLiteral("snowViewGrayscale"));
+    auto* taskPane = editorWindow->findChild<QWidget*>(QStringLiteral("snowViewTaskPane"));
+    auto* filterPane = editorWindow->findChild<QWidget*>(QStringLiteral("snowViewFilterPane"));
+    auto* intensitySlider =
+        taskPane->findChild<AdSlider*>(QStringLiteral("snowViewFilterIntensitySlider"));
+    auto* applyFilterBtn = taskPane->findChild<AdButton*>(QStringLiteral("snowViewFilterApply"));
+    require(filterBtn && taskPane && filterPane && intensitySlider && applyFilterBtn,
+            "Color filters button and right Task Pane exist");
+
+    const std::array<const char*, 10> presetNames = {
+        "snowViewFilterGrayscale", "snowViewFilterBwContrast", "snowViewFilterSepia",
+        "snowViewFilterNostalgia", "snowViewFilterVintage",    "snowViewFilterWarm",
+        "snowViewFilterCool",      "snowViewFilterFade",       "snowViewFilterVivid",
+        "snowViewFilterNegative"};
+    std::array<QAbstractButton*, 10> presetCards{};
+    for (std::size_t i = 0; i < presetNames.size(); ++i) {
+        presetCards[i] = taskPane->findChild<QAbstractButton*>(QString::fromLatin1(presetNames[i]));
+        require(presetCards[i], "all 10 color filter preset cards exist");
+    }
+
+    const QByteArray tx = window.document()->runtime().applyAnnotationTransaction(QByteArrayLiteral(
+        R"({"version":1,"operations":[{"type":"rectangle","bounds":[1,1,4,4]}]})"));
+    require(!tx.isEmpty() && window.document()->runtime().hasDocumentContent(),
+            "added live annotation before color filter");
+
+    filterBtn->click();
+    QApplication::processEvents();
+    require(
+        !window.findChild<adqt::widgets::AdModal*>(QStringLiteral("snowViewFlattenConfirmModal")) &&
+            taskPane->isVisible() && filterPane->isVisible() && filterBtn->isChecked() &&
+            qRound(intensitySlider->value()) == 100,
+        "Color filters opens Task Pane beneath live annotations without flatten warning");
+    awaitCondition([&] { return window.document()->hasPreviewImage(); },
+                   "default Grayscale filter previews live");
+
+    const QImage grayscalePreview = window.document()->displayImage();
+    presetCards[2]->click(); // Sepia
+    QApplication::processEvents();
+    require(window.document()->displayImage() != grayscalePreview,
+            "switching preset to Sepia updates live canvas preview");
+    presetCards[9]->click(); // Negative
+    intensitySlider->setValue(60);
+    awaitCondition([&] { return window.document()->displayImage() != grayscalePreview; },
+                   "Negative preset with 60% intensity previews live");
+
+    applyFilterBtn->click();
+    QApplication::processEvents();
+    require(!taskPane->isVisible() && !window.document()->hasPreviewImage() &&
+                window.document()->image() != original.image &&
+                window.document()->runtime().hasDocumentContent(),
+            "applying filter commits base image while preserving editable annotations");
+    require(window.document()->undo() && window.document()->image() == original.image &&
+                window.document()->runtime().hasDocumentContent(),
+            "Undo reverses applied color filter cleanly without touching annotations");
+
+    // Verify 4-edge drag-snapping and horizontal/vertical orientation switching on imageToolbar.
+    auto* imageToolbar = canvas->findChild<QWidget*>(QStringLiteral("snowViewImageToolbar"));
+    auto* dragHandle =
+        imageToolbar->findChild<QWidget*>(QStringLiteral("canvasActionToolbarDragHandle"));
+    require(imageToolbar && dragHandle && imageToolbar->width() > imageToolbar->height(),
+            "enlarged image toolbar has drag handle and starts horizontal");
+    const auto dragHandleTo = [&](const QPoint& canvasTarget) {
+        const QPoint localStart = dragHandle->rect().center();
+        const QPoint globalStart = dragHandle->mapToGlobal(localStart);
+        const QPoint globalEnd = canvas->mapToGlobal(canvasTarget);
+        const QPoint delta = globalEnd - globalStart;
+        QMouseEvent press(QEvent::MouseButtonPress, localStart, globalStart, Qt::LeftButton,
+                          Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(dragHandle, &press);
+        QMouseEvent move(QEvent::MouseMove, localStart + delta, globalEnd, Qt::NoButton,
+                         Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(dragHandle, &move);
+        QMouseEvent release(QEvent::MouseButtonRelease, localStart + delta, globalEnd,
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(dragHandle, &release);
+        QApplication::processEvents();
+    };
+    dragHandleTo(QPoint(12, canvas->height() / 2));
+    require(imageToolbar->height() > imageToolbar->width() && imageToolbar->x() == 16,
+            "dragging image toolbar to left edge snaps vertically at left margin");
+    dragHandleTo(QPoint(canvas->width() - 12, canvas->height() / 2));
+    require(imageToolbar->height() > imageToolbar->width() &&
+                imageToolbar->geometry().right() == canvas->rect().right() - 16,
+            "dragging image toolbar to right edge snaps vertically at right margin");
+    dragHandleTo(QPoint(canvas->width() / 2, canvas->height() - 12));
+    require(imageToolbar->width() > imageToolbar->height() &&
+                imageToolbar->geometry().bottom() == canvas->rect().bottom() - 16,
+            "dragging image toolbar to bottom edge snaps horizontally at bottom margin");
+    dragHandleTo(QPoint(canvas->width() / 2, 16));
+    require(imageToolbar->width() > imageToolbar->height() && imageToolbar->y() == 16,
+            "dragging image toolbar back to top edge restores horizontal top snap");
     window.shutdown();
 }
 void verifySaveDefaultsToCurrentFilePath() {
@@ -2452,6 +2584,7 @@ void runImageEditingTests() {
     verifyPhotoshopCropMode(original);
     verifyAnnotationFlattenConfirmAndTenStepUndo(original);
     verifyAdjustTaskPaneLivePreview(original);
+    verifyColorFilterPresetsAndEdgeSnapping(original);
     verifySaveDefaultsToCurrentFilePath();
     verifySnowViewFilmstripAndWheel();
     verifyLoadingFeedback(original);

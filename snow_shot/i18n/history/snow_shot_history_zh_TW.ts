@@ -313,8 +313,64 @@
             <translation>銳化</translation>
         </message>
         <message>
+            <source>Apply filter (Enter)</source>
+            <translation>套用濾鏡 (Enter)</translation>
+        </message>
+        <message>
+            <source>B&amp;W Contrast</source>
+            <translation>高對比黑白</translation>
+        </message>
+        <message>
+            <source>Cancel filter (Esc)</source>
+            <translation>取消濾鏡 (Esc)</translation>
+        </message>
+        <message>
+            <source>Color filters</source>
+            <translation>色彩濾鏡</translation>
+        </message>
+        <message>
+            <source>Cool</source>
+            <translation>冷色</translation>
+        </message>
+        <message>
+            <source>Fade</source>
+            <translation>褪色</translation>
+        </message>
+        <message>
+            <source>Grayscale</source>
+            <translation>灰階</translation>
+        </message>
+        <message>
+            <source>Intensity</source>
+            <translation>強度</translation>
+        </message>
+        <message>
+            <source>Negative</source>
+            <translation>負片</translation>
+        </message>
+        <message>
+            <source>Nostalgia</source>
+            <translation>懷舊</translation>
+        </message>
+        <message>
+            <source>Sepia</source>
+            <translation>復古褐色</translation>
+        </message>
+        <message>
             <source>Snow Shot</source>
             <translation>Snow Shot</translation>
+        </message>
+        <message>
+            <source>Vintage</source>
+            <translation>底片</translation>
+        </message>
+        <message>
+            <source>Vivid</source>
+            <translation>鮮豔</translation>
+        </message>
+        <message>
+            <source>Warm</source>
+            <translation>暖色</translation>
         </message>
         <message>
             <source>Swap ratio</source>

@@ -45,6 +45,7 @@
 #include "widgets/button.h"
 #include "widgets/input_number.h"
 #include "widgets/slider.h"
+#include <QAbstractButton>
 #include <QApplication>
 #include <QClipboard>
 #include <QColorSpace>
@@ -56,9 +57,12 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QPainter>
+#include <QPainterPath>
 #include <QScreen>
 #include <QScopedValueRollback>
 #include <QScopeGuard>
+#include <QScrollArea>
+#include <tuple>
 #include <QSignalBlocker>
 #include <QThread>
 #include <QStackedLayout>
@@ -349,7 +353,188 @@ QImage snowViewDecodeThumbnail(const QString& path, QSize targetPixelSize,
     return reader.read();
 }
 
-// SnowView Rev0.3: theme-aware right-side docked Task Pane for Crop and Adjust controls.
+// SnowView Rev0.3 (1.6.5-0.3): 10 curated color filter presets with adjustable blend intensity.
+enum class SnowViewColorFilterPreset {
+    Grayscale,
+    BwContrast,
+    Sepia,
+    Nostalgia,
+    Vintage,
+    Warm,
+    Cool,
+    Fade,
+    Vivid,
+    Negative,
+};
+
+QImage snowViewApplyColorFilter(const QImage& source, SnowViewColorFilterPreset preset,
+                                int intensity = 100) {
+    if (source.isNull())
+        return {};
+    const int clampedIntensity = std::clamp(intensity, 0, 100);
+    if (clampedIntensity == 0)
+        return source;
+    const double blend = clampedIntensity / 100.0;
+    QImage image = source.convertToFormat(QImage::Format_ARGB32);
+    const auto sCurve = [](int value, double factor) {
+        return std::clamp(qRound((value - 128) * factor + 128.0), 0, 255);
+    };
+    const auto saturate = [](int r, int g, int b, double factor) {
+        const int gray = qGray(r, g, b);
+        return std::tuple<int, int, int>{
+            std::clamp(qRound(gray + (r - gray) * factor), 0, 255),
+            std::clamp(qRound(gray + (g - gray) * factor), 0, 255),
+            std::clamp(qRound(gray + (b - gray) * factor), 0, 255),
+        };
+    };
+    for (int y = 0; y < image.height(); ++y) {
+        auto* line = reinterpret_cast<QRgb*>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            const QRgb pixel = line[x];
+            const int r0 = qRed(pixel);
+            const int g0 = qGreen(pixel);
+            const int b0 = qBlue(pixel);
+            int r = r0;
+            int g = g0;
+            int b = b0;
+            switch (preset) {
+            case SnowViewColorFilterPreset::Grayscale: {
+                const int luma =
+                    std::clamp(qRound(0.2126 * r0 + 0.7152 * g0 + 0.0722 * b0), 0, 255);
+                r = g = b = luma;
+                break;
+            }
+            case SnowViewColorFilterPreset::BwContrast: {
+                const int luma =
+                    std::clamp(qRound(0.2126 * r0 + 0.7152 * g0 + 0.0722 * b0), 0, 255);
+                r = g = b = sCurve(luma, 1.35);
+                break;
+            }
+            case SnowViewColorFilterPreset::Sepia:
+                r = std::clamp(qRound(0.393 * r0 + 0.769 * g0 + 0.189 * b0), 0, 255);
+                g = std::clamp(qRound(0.349 * r0 + 0.686 * g0 + 0.168 * b0), 0, 255);
+                b = std::clamp(qRound(0.272 * r0 + 0.534 * g0 + 0.131 * b0), 0, 255);
+                break;
+            case SnowViewColorFilterPreset::Nostalgia: {
+                auto [sr, sg, sb] = saturate(r0, g0, b0, 0.75);
+                r = std::clamp(qRound(12.0 + (sr + 12) * (243.0 / 255.0)), 0, 255);
+                g = std::clamp(qRound(12.0 + (sg + 4) * (243.0 / 255.0)), 0, 255);
+                b = std::clamp(qRound(12.0 + (sb - 10) * (243.0 / 255.0)), 0, 255);
+                break;
+            }
+            case SnowViewColorFilterPreset::Vintage: {
+                const int cr = sCurve(r0, 0.90);
+                const int cg = sCurve(g0, 0.90);
+                const int cb = sCurve(b0, 0.90);
+                r = std::clamp(qRound(cr + 10.0 * (cr / 255.0)), 0, 255);
+                g = std::clamp(qRound(cg + 6.0 * (cg / 255.0)), 0, 255);
+                b = std::clamp(qRound(cb + 8.0 * (1.0 - cb / 255.0)), 0, 255);
+                break;
+            }
+            case SnowViewColorFilterPreset::Warm: {
+                auto [sr, sg, sb] = saturate(r0, g0, b0, 1.10);
+                r = std::clamp(sr + 14, 0, 255);
+                g = std::clamp(sg + 5, 0, 255);
+                b = std::clamp(sb - 12, 0, 255);
+                break;
+            }
+            case SnowViewColorFilterPreset::Cool:
+                r = std::clamp(sCurve(r0, 1.06) - 10, 0, 255);
+                g = std::clamp(sCurve(g0, 1.06) + 2, 0, 255);
+                b = std::clamp(sCurve(b0, 1.06) + 14, 0, 255);
+                break;
+            case SnowViewColorFilterPreset::Fade: {
+                const int fr = std::clamp(qRound(22.0 + r0 * 0.88), 0, 255);
+                const int fg = std::clamp(qRound(22.0 + g0 * 0.88), 0, 255);
+                const int fb = std::clamp(qRound(22.0 + b0 * 0.88), 0, 255);
+                std::tie(r, g, b) = saturate(fr, fg, fb, 0.85);
+                break;
+            }
+            case SnowViewColorFilterPreset::Vivid:
+                std::tie(r, g, b) =
+                    saturate(sCurve(r0, 1.12), sCurve(g0, 1.12), sCurve(b0, 1.12), 1.25);
+                break;
+            case SnowViewColorFilterPreset::Negative:
+                r = 255 - r0;
+                g = 255 - g0;
+                b = 255 - b0;
+                break;
+            }
+            if (clampedIntensity < 100) {
+                r = std::clamp(qRound(r0 + (r - r0) * blend), 0, 255);
+                g = std::clamp(qRound(g0 + (g - g0) * blend), 0, 255);
+                b = std::clamp(qRound(b0 + (b - b0) * blend), 0, 255);
+            }
+            line[x] = qRgba(r, g, b, qAlpha(pixel));
+        }
+    }
+    return image;
+}
+
+class SnowViewFilterCardButton final : public QAbstractButton {
+  public:
+    explicit SnowViewFilterCardButton(QWidget* parent = nullptr) : QAbstractButton(parent) {
+        setCheckable(true);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::StrongFocus);
+        setFixedSize(118, 86);
+        setMouseTracking(true);
+        connect(&adqt::theme::ThemeManager::instance(), &adqt::theme::ThemeManager::themeChanged,
+                this, [this] { update(); });
+    }
+
+    void setPreviewImage(const QImage& image) {
+        m_preview = image;
+        update();
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override {
+        const auto theme = adqt::theme::ThemeManager::instance().resolveTheme(this);
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        const QRectF cardRect = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        const QColor fill = isChecked()    ? theme.colorPrimaryBg
+                            : underMouse() ? theme.colorFillTertiary
+                                           : theme.colorFillQuaternary;
+        const QColor border =
+            isChecked() || hasFocus() ? theme.colorPrimary : theme.colorBorderSecondary;
+        painter.setPen(QPen(border, isChecked() ? 1.5 : 1.0));
+        painter.setBrush(fill);
+        painter.drawRoundedRect(cardRect, theme.borderRadiusSM, theme.borderRadiusSM);
+
+        const QRectF thumbArea(8.0, 6.0, width() - 16.0, 52.0);
+        if (!m_preview.isNull()) {
+            QPainterPath clip;
+            clip.addRoundedRect(thumbArea, 4.0, 4.0);
+            painter.save();
+            painter.setClipPath(clip);
+            const QSizeF scaled =
+                QSizeF(m_preview.size()).scaled(thumbArea.size(), Qt::KeepAspectRatioByExpanding);
+            const QRectF drawRect(thumbArea.center().x() - scaled.width() * 0.5,
+                                  thumbArea.center().y() - scaled.height() * 0.5, scaled.width(),
+                                  scaled.height());
+            painter.drawImage(drawRect, m_preview);
+            painter.restore();
+        } else {
+            painter.fillRect(thumbArea, theme.colorBgLayout);
+        }
+
+        const QRectF textRect(6.0, 61.0, width() - 12.0, 20.0);
+        painter.setPen(isChecked() ? theme.colorPrimaryText : theme.colorText);
+        QFont f = font();
+        f.setPixelSize(11);
+        f.setWeight(isChecked() ? QFont::DemiBold : QFont::Normal);
+        painter.setFont(f);
+        painter.drawText(textRect, Qt::AlignCenter | Qt::TextSingleLine, text());
+    }
+
+  private:
+    QImage m_preview;
+};
+
+// SnowView Rev0.3: theme-aware right-side docked Task Pane for Crop, Adjust, and Color Filters.
 class SnowViewTaskPanePanel final : public QWidget {
   public:
     explicit SnowViewTaskPanePanel(QWidget* parent = nullptr) : QWidget(parent) {
@@ -443,10 +628,34 @@ struct ImageEditingWindow::Impl {
     AdButton* adjustCancelButton = nullptr;
     AdButton* adjustApplyButton = nullptr;
     bool adjustActive = false;
-    bool adjustFlattenPending = false;
     QImage adjustBaseImage;
     QImage adjustPreviewBase;
     QTimer adjustPreviewTimer;
+    QWidget* filterTaskPage = nullptr;
+    QLabel* filterPaneTitle = nullptr;
+    QScrollArea* filterScrollArea = nullptr;
+    std::array<SnowViewFilterCardButton*, 10> filterButtons{};
+    QLabel* filterIntensityLabel = nullptr;
+    QLabel* filterIntensityValueLabel = nullptr;
+    AdSlider* filterIntensitySlider = nullptr;
+    AdButton* filterResetButton = nullptr;
+    AdButton* filterCancelButton = nullptr;
+    AdButton* filterApplyButton = nullptr;
+    bool filterActive = false;
+    SnowViewColorFilterPreset filterPreset = SnowViewColorFilterPreset::Grayscale;
+    QImage filterBaseImage;
+    QImage filterPreviewBase;
+    QTimer filterPreviewTimer;
+    enum class ToolbarSnapEdge { None, Top, Bottom, Left, Right };
+    ToolbarSnapEdge imageToolbarEdge = ToolbarSnapEdge::Top;
+    double imageToolbarAnchor = 0.5;
+    QPoint imageToolbarFreePos;
+    bool draggingImageToolbar = false;
+    QPoint imageToolbarDragStartGlobal;
+    QPoint imageToolbarDragStartTopLeft;
+    ToolbarSnapEdge floatingSnapEdge = ToolbarSnapEdge::Bottom;
+    double floatingSnapAnchor = 0.5;
+    bool floatingDragActive = false;
     QPointer<AdModal> flattenConfirmation;
     QPointer<AdMessageHandle> statusMessage;
     WindowShortcutManager shortcuts;
@@ -513,13 +722,11 @@ struct ImageEditingWindow::Impl {
                              emptyState->refreshTheme();
                              dropHint->refreshTheme();
                          });
-        auto* overlay = new QVBoxLayout(canvas);
-        overlay->setContentsMargins(16, 16, 16, 16);
-        overlay->setSpacing(8);
-        // SnowView Rev0.2: unified top canvas toolbar (transforms + Photoshop crop + enhance +
-        // zoom) with larger 18px icons inside 32x32 action buttons.
-        imageToolbar = new components::CanvasActionToolbar(canvas, QSize(32, 32), QSize(18, 18));
+        // SnowView Rev0.3 (1.6.5-0.3): enlarged +50% draggable 4-edge-snapping image toolbar
+        // (48x48 buttons, 26x26 icons) + 10 color filter presets + non-flattening color edits.
+        imageToolbar = new components::CanvasActionToolbar(canvas, QSize(48, 48), QSize(26, 26));
         imageToolbar->setObjectName(QStringLiteral("snowViewImageToolbar"));
+        imageToolbar->setDragHandleEnabled(true);
         flipHorizontalButton = imageToolbar->addAction(icons::custom::outlined::FlipHorizontal(),
                                                        "snowViewFlipHorizontal");
         flipVerticalButton = imageToolbar->addAction(icons::custom::outlined::FlipVertical(),
@@ -538,13 +745,13 @@ struct ImageEditingWindow::Impl {
                                                     "snowViewAutoEnhance");
         grayscaleButton =
             imageToolbar->addAction(adqt::icons::antd::outlined::BgColors(), "snowViewGrayscale");
+        grayscaleButton->setCheckable(true);
         imageToolbar->addSeparator();
         fit = imageToolbar->addAction(adqt::icons::antd::outlined::Fullscreen(), "imageEditingFit");
         actual = imageToolbar->addAction(icons::custom::outlined::ActualSize(),
                                          "imageEditingActualSize");
         imageToolbar->hide();
-        overlay->addWidget(imageToolbar, 0, Qt::AlignHCenter);
-        overlay->addStretch(1);
+        imageToolbar->adjustSize();
         floating->setObjectName(QStringLiteral("imageEditingToolbar"));
         floating->installEventFilter(&q);
         modal->setObjectName(QStringLiteral("imageEditingModal"));
@@ -803,6 +1010,102 @@ struct ImageEditingWindow::Impl {
         adjustLayout->addLayout(adjustFooter);
         taskStack->addWidget(adjustTaskPage);
 
+        // Page 2: 10-preset Color Filters right Task Pane
+        filterTaskPage = new QWidget(taskStack);
+        filterTaskPage->setObjectName(QStringLiteral("snowViewFilterPane"));
+        auto* filterLayout = new QVBoxLayout(filterTaskPage);
+        filterLayout->setContentsMargins(0, 0, 0, 0);
+        filterLayout->setSpacing(10);
+        filterPaneTitle = new QLabel(filterTaskPage);
+        filterPaneTitle->setObjectName(QStringLiteral("snowViewFilterPaneTitle"));
+        filterPaneTitle->setFont(titleFont);
+        filterLayout->addWidget(filterPaneTitle);
+
+        filterScrollArea = new QScrollArea(filterTaskPage);
+        filterScrollArea->setObjectName(QStringLiteral("snowViewFilterScroll"));
+        filterScrollArea->setWidgetResizable(true);
+        filterScrollArea->setFrameShape(QFrame::NoFrame);
+        filterScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        filterScrollArea->viewport()->setAutoFillBackground(false);
+        auto* filterGridHost = new QWidget(filterScrollArea);
+        filterGridHost->setAutoFillBackground(false);
+        auto* filterGrid = new QGridLayout(filterGridHost);
+        filterGrid->setContentsMargins(0, 0, 2, 0);
+        filterGrid->setHorizontalSpacing(8);
+        filterGrid->setVerticalSpacing(8);
+        const std::array<const char*, 10> filterNames = {
+            "snowViewFilterGrayscale", "snowViewFilterBwContrast", "snowViewFilterSepia",
+            "snowViewFilterNostalgia", "snowViewFilterVintage",    "snowViewFilterWarm",
+            "snowViewFilterCool",      "snowViewFilterFade",       "snowViewFilterVivid",
+            "snowViewFilterNegative"};
+        for (int i = 0; i < 10; ++i) {
+            auto* card = new SnowViewFilterCardButton(filterGridHost);
+            card->setObjectName(QString::fromLatin1(filterNames[static_cast<std::size_t>(i)]));
+            filterButtons[static_cast<std::size_t>(i)] = card;
+            filterGrid->addWidget(card, i / 2, i % 2);
+            QObject::connect(card, &QAbstractButton::clicked, &q, [this, i] {
+                selectFilterPreset(static_cast<SnowViewColorFilterPreset>(i));
+            });
+        }
+        filterGrid->setRowStretch(5, 1);
+        filterScrollArea->setWidget(filterGridHost);
+        filterLayout->addWidget(filterScrollArea, 1);
+
+        auto* intensityHeader = new QHBoxLayout;
+        intensityHeader->setContentsMargins(0, 0, 0, 0);
+        filterIntensityLabel = new QLabel(filterTaskPage);
+        filterIntensityValueLabel = new QLabel(QStringLiteral("100%"), filterTaskPage);
+        filterIntensityValueLabel->setObjectName(QStringLiteral("snowViewFilterIntensityValue"));
+        filterIntensityValueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        intensityHeader->addWidget(filterIntensityLabel, 1);
+        intensityHeader->addWidget(filterIntensityValueLabel, 0);
+        filterLayout->addLayout(intensityHeader);
+
+        filterIntensitySlider = new AdSlider(filterTaskPage);
+        filterIntensitySlider->setObjectName(QStringLiteral("snowViewFilterIntensitySlider"));
+        filterIntensitySlider->setRange(0, 100);
+        filterIntensitySlider->setSingleStep(1);
+        filterIntensitySlider->setPageStep(10);
+        filterIntensitySlider->setTracking(true);
+        filterIntensitySlider->setWheelEnabled(true);
+        filterIntensitySlider->setTooltipEnabled(false);
+        filterIntensitySlider->setValue(100);
+        filterLayout->addWidget(filterIntensitySlider);
+        QObject::connect(filterIntensitySlider, &AdSlider::valueChanged, &q, [this](double val) {
+            const int rounded = qRound(val);
+            if (filterIntensityValueLabel)
+                filterIntensityValueLabel->setText(QStringLiteral("%1%").arg(rounded));
+            scheduleFilterPreview();
+        });
+
+        auto* filterFooter = new QHBoxLayout;
+        filterFooter->setContentsMargins(0, 0, 0, 0);
+        filterFooter->setSpacing(6);
+        filterResetButton = new AdButton(filterTaskPage);
+        filterResetButton->setObjectName(QStringLiteral("snowViewFilterReset"));
+        filterResetButton->setIconRef(adqt::icons::antd::outlined::Undo());
+        filterResetButton->setSizeClass(AdButton::SizeClass::Small);
+        filterResetButton->setButtonStyle(AdButton::ButtonStyle::Text);
+        filterResetButton->setReferenceIconSize({14, 14});
+        filterResetButton->setFocusPolicy(Qt::StrongFocus);
+        filterCancelButton = new AdButton(filterTaskPage);
+        filterCancelButton->setObjectName(QStringLiteral("snowViewFilterCancel"));
+        filterCancelButton->setSizeClass(AdButton::SizeClass::Small);
+        filterCancelButton->setButtonStyle(AdButton::ButtonStyle::Text);
+        filterCancelButton->setFocusPolicy(Qt::StrongFocus);
+        filterApplyButton = new AdButton(filterTaskPage);
+        filterApplyButton->setObjectName(QStringLiteral("snowViewFilterApply"));
+        filterApplyButton->setSizeClass(AdButton::SizeClass::Small);
+        filterApplyButton->setButtonStyle(AdButton::ButtonStyle::Solid);
+        filterApplyButton->setAccentRole(AdButton::AccentRole::Primary);
+        filterApplyButton->setFocusPolicy(Qt::StrongFocus);
+        filterFooter->addWidget(filterResetButton);
+        filterFooter->addStretch(1);
+        filterFooter->addWidget(filterCancelButton);
+        filterFooter->addWidget(filterApplyButton);
+        filterLayout->addLayout(filterFooter);
+        taskStack->addWidget(filterTaskPage);
+
         taskPane->hide();
         workLayout->addWidget(taskPane, 0);
         paneLayout->addWidget(workArea, 1);
@@ -811,6 +1114,10 @@ struct ImageEditingWindow::Impl {
         adjustPreviewTimer.setInterval(16);
         QObject::connect(&adjustPreviewTimer, &QTimer::timeout, &q,
                          [this] { applyAdjustPreviewNow(); });
+        filterPreviewTimer.setSingleShot(true);
+        filterPreviewTimer.setInterval(16);
+        QObject::connect(&filterPreviewTimer, &QTimer::timeout, &q,
+                         [this] { applyFilterPreviewNow(); });
         filmstrip = new QListWidget(contentPane);
         filmstrip->setObjectName(QStringLiteral("snowViewFilmstrip"));
         filmstrip->setViewMode(QListView::IconMode);
@@ -844,16 +1151,26 @@ struct ImageEditingWindow::Impl {
                          });
         QObject::connect(&document, &ImageEditingDocument::baseImageChanged, &q, [this] {
             imageToolbar->setVisible(!document.image().isNull());
+            placeImageToolbar();
             refreshMetadata();
         });
+        imageToolbar->dragStarted = [this](const QPoint& globalPos) {
+            beginImageToolbarDrag(globalPos);
+        };
+        imageToolbar->dragMoved = [this](const QPoint& globalPos) {
+            updateImageToolbarDrag(globalPos);
+        };
+        imageToolbar->dragFinished = [this](const QPoint& globalPos) {
+            finishImageToolbarDrag(globalPos);
+        };
         QObject::connect(modal, &AdModal::closeRequested, &q, [this](auto) { q.requestClose(); });
         QObject::connect(modal, &AdModal::windowInteractionStarted, &q,
                          [this] { beginWindowInteraction(); });
         QObject::connect(modal, &AdModal::windowInteractionFinished, &q,
                          [this] { endWindowInteraction(); });
         QObject::connect(host, &ScreenshotToolPaletteHost::visibleContentChanged, &q, [this] {
-            // The shared window preserves a dragged main row as its settings change.
-            if (!manuallyPlaced)
+            // The shared window preserves a dragged/snapped anchor as its secondary row toggles.
+            if (!manuallyPlaced || floatingSnapEdge != ToolbarSnapEdge::None)
                 placeToolbar();
         });
         QObject::connect(floating, &ScreenshotFloatingToolPaletteWindow::dpiScaleCommitCompleted,
@@ -861,12 +1178,21 @@ struct ImageEditingWindow::Impl {
         QObject::connect(host, &ScreenshotToolPaletteHost::dragStarted, &q, [this] {
             manuallyPlaced = true;
             draggingToolbar = true;
+            floatingDragActive = true;
+            floatingSnapEdge = ToolbarSnapEdge::None;
             rememberToolbarOffset();
         });
         QObject::connect(floating, &ScreenshotFloatingToolPaletteWindow::dragFinished, &q, [this] {
+            const bool draggedByHandle = floatingDragActive;
+            floatingDragActive = false;
             manuallyPlaced = true;
             draggingToolbar = false;
-            rememberToolbarOffset();
+            if (draggedByHandle) {
+                snapFloatingToolbarToEdge();
+            } else {
+                floatingSnapEdge = ToolbarSnapEdge::None;
+                rememberToolbarOffset();
+            }
         });
         QObject::connect(palette, &ScreenshotToolPalette::cropRowsRequested, &q,
                          [this] { drawing(ImageEditingCanvas::Mode::CropRows); });
@@ -909,7 +1235,12 @@ struct ImageEditingWindow::Impl {
         QObject::connect(adjustApplyButton, &AdButton::clicked, &q,
                          [this] { exitAdjustMode(true); });
         QObject::connect(autoEnhanceButton, &AdButton::clicked, &q, [this] { autoEnhanceImage(); });
-        QObject::connect(grayscaleButton, &AdButton::clicked, &q, [this] { grayscaleImage(); });
+        QObject::connect(grayscaleButton, &AdButton::clicked, &q, [this] { toggleFilterMode(); });
+        QObject::connect(filterResetButton, &AdButton::clicked, &q, [this] { resetFilterPane(); });
+        QObject::connect(filterCancelButton, &AdButton::clicked, &q,
+                         [this] { exitFilterMode(false); });
+        QObject::connect(filterApplyButton, &AdButton::clicked, &q,
+                         [this] { exitFilterMode(true); });
         canvas->cropRectChanged = [this](const QRect& rect, int angle) {
             updateCropReadout(rect, angle);
         };
@@ -1122,11 +1453,27 @@ struct ImageEditingWindow::Impl {
                 return true;
             });
         addCropShortcut(
+            "snowViewFilterCommit",
+            {QKeyCombination(Qt::Key_Return), QKeyCombination(Qt::Key_Enter)}, Qt::KeypadModifier,
+            [this] { return filterActive; },
+            [this] {
+                exitFilterMode(true);
+                return true;
+            });
+        addCropShortcut(
+            "snowViewFilterCancel", {QKeyCombination(Qt::Key_Escape)}, Qt::NoModifier,
+            [this] { return filterActive; },
+            [this] {
+                exitFilterMode(false);
+                return true;
+            });
+        addCropShortcut(
             "snowViewFilmstripPrev", {QKeyCombination(Qt::Key_Left)}, Qt::NoModifier,
             [this] {
                 return canvas->mode() != ImageEditingCanvas::Mode::CropRect && !adjustActive &&
-                       !document.image().isNull() && !loading && !cropBusy && filmstrip &&
-                       filmstrip->count() > 1 && !(colorSampling && colorSampling->active());
+                       !filterActive && !document.image().isNull() && !loading && !cropBusy &&
+                       filmstrip && filmstrip->count() > 1 &&
+                       !(colorSampling && colorSampling->active());
             },
             [this] {
                 stepFilmstrip(-1);
@@ -1136,8 +1483,9 @@ struct ImageEditingWindow::Impl {
             "snowViewFilmstripNext", {QKeyCombination(Qt::Key_Right)}, Qt::NoModifier,
             [this] {
                 return canvas->mode() != ImageEditingCanvas::Mode::CropRect && !adjustActive &&
-                       !document.image().isNull() && !loading && !cropBusy && filmstrip &&
-                       filmstrip->count() > 1 && !(colorSampling && colorSampling->active());
+                       !filterActive && !document.image().isNull() && !loading && !cropBusy &&
+                       filmstrip && filmstrip->count() > 1 &&
+                       !(colorSampling && colorSampling->active());
             },
             [this] {
                 stepFilmstrip(1);
@@ -1372,7 +1720,7 @@ struct ImageEditingWindow::Impl {
             QCoreApplication::translate("ImageEditingWindow", "Auto enhance"));
         autoEnhanceButton->setAccessibleName(autoEnhanceButton->toolTip());
         grayscaleButton->setToolTip(
-            QCoreApplication::translate("ImageEditingWindow", "Convert to grayscale"));
+            QCoreApplication::translate("ImageEditingWindow", "Color filters"));
         grayscaleButton->setAccessibleName(grayscaleButton->toolTip());
         if (cropTaskPage) {
             cropPaneTitle->setText(
@@ -1440,6 +1788,40 @@ struct ImageEditingWindow::Impl {
             adjustApplyButton->setText(QCoreApplication::translate("ImageEditingWindow", "Apply"));
             adjustApplyButton->setToolTip(
                 QCoreApplication::translate("ImageEditingWindow", "Apply adjust (Enter)"));
+        }
+        if (filterTaskPage) {
+            filterPaneTitle->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Color filters"));
+            const std::array<const char*, 10> labels = {
+                QT_TRANSLATE_NOOP("ImageEditingWindow", "Grayscale"),
+                QT_TRANSLATE_NOOP("ImageEditingWindow", "B&W Contrast"),
+                QT_TRANSLATE_NOOP("ImageEditingWindow", "Sepia"),
+                QT_TRANSLATE_NOOP("ImageEditingWindow", "Nostalgia"),
+                QT_TRANSLATE_NOOP("ImageEditingWindow", "Vintage"),
+                QT_TRANSLATE_NOOP("ImageEditingWindow", "Warm"),
+                QT_TRANSLATE_NOOP("ImageEditingWindow", "Cool"),
+                QT_TRANSLATE_NOOP("ImageEditingWindow", "Fade"),
+                QT_TRANSLATE_NOOP("ImageEditingWindow", "Vivid"),
+                QT_TRANSLATE_NOOP("ImageEditingWindow", "Negative"),
+            };
+            for (std::size_t i = 0; i < filterButtons.size(); ++i) {
+                if (!filterButtons[i])
+                    continue;
+                const QString text = QCoreApplication::translate("ImageEditingWindow", labels[i]);
+                filterButtons[i]->setText(text);
+                filterButtons[i]->setToolTip(text);
+                filterButtons[i]->setAccessibleName(text);
+            }
+            filterIntensityLabel->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Intensity"));
+            filterResetButton->setText(QCoreApplication::translate("ImageEditingWindow", "Reset"));
+            filterCancelButton->setText(
+                QCoreApplication::translate("ImageEditingWindow", "Cancel"));
+            filterCancelButton->setToolTip(
+                QCoreApplication::translate("ImageEditingWindow", "Cancel filter (Esc)"));
+            filterApplyButton->setText(QCoreApplication::translate("ImageEditingWindow", "Apply"));
+            filterApplyButton->setToolTip(
+                QCoreApplication::translate("ImageEditingWindow", "Apply filter (Enter)"));
         }
         emptyState->title->setText(ImageEditingWindow::tr("Add images to start image editing"));
         emptyState->description->setText(
@@ -1521,12 +1903,182 @@ struct ImageEditingWindow::Impl {
             if (child->isWindow())
                 child->hide();
     }
+    void beginImageToolbarDrag(const QPoint& globalPos) {
+        if (!imageToolbar || !canvas)
+            return;
+        draggingImageToolbar = true;
+        imageToolbarDragStartGlobal = globalPos;
+        imageToolbarDragStartTopLeft = imageToolbar->pos();
+        imageToolbar->raise();
+    }
+    void updateImageToolbarDrag(const QPoint& globalPos) {
+        if (!draggingImageToolbar || !imageToolbar || !canvas || canvas->rect().isEmpty())
+            return;
+        constexpr int kSnapThreshold = 36;
+        constexpr int kFreeMargin = 8;
+        const QRect bounds = canvas->rect();
+        const QPoint cursorLocal = canvas->mapFromGlobal(globalPos);
+        const QPoint desired =
+            imageToolbarDragStartTopLeft + (globalPos - imageToolbarDragStartGlobal);
+        const QSize currentSize = imageToolbar->size();
+        const int distTop = std::min(std::abs(desired.y() - bounds.top()),
+                                     std::max(0, cursorLocal.y() - bounds.top()));
+        const int distBottom =
+            std::min(std::abs(bounds.bottom() - (desired.y() + currentSize.height())),
+                     std::max(0, bounds.bottom() - cursorLocal.y()));
+        const int distLeft = std::min(std::abs(desired.x() - bounds.left()),
+                                      std::max(0, cursorLocal.x() - bounds.left()));
+        const int distRight =
+            std::min(std::abs(bounds.right() - (desired.x() + currentSize.width())),
+                     std::max(0, bounds.right() - cursorLocal.x()));
+        struct Candidate {
+            ToolbarSnapEdge edge;
+            int dist;
+        };
+        const std::array<Candidate, 4> candidates = {
+            Candidate{ToolbarSnapEdge::Top, distTop},
+            Candidate{ToolbarSnapEdge::Bottom, distBottom},
+            Candidate{ToolbarSnapEdge::Left, distLeft},
+            Candidate{ToolbarSnapEdge::Right, distRight},
+        };
+        const auto best = std::min_element(
+            candidates.cbegin(), candidates.cend(),
+            [](const Candidate& a, const Candidate& b) { return a.dist < b.dist; });
+        if (best != candidates.cend() && best->dist <= kSnapThreshold) {
+            imageToolbarEdge = best->edge;
+            const bool horizontal =
+                best->edge == ToolbarSnapEdge::Top || best->edge == ToolbarSnapEdge::Bottom;
+            imageToolbar->setOrientation(horizontal ? Qt::Horizontal : Qt::Vertical);
+            const QSize snappedSize = imageToolbar->size();
+            if (horizontal) {
+                const int span = std::max(1, bounds.width() - snappedSize.width() - 32);
+                const int left = cursorLocal.x() - snappedSize.width() / 2 - 16;
+                imageToolbarAnchor = std::clamp(static_cast<double>(left) / span, 0.0, 1.0);
+            } else {
+                const int span = std::max(1, bounds.height() - snappedSize.height() - 32);
+                const int top = cursorLocal.y() - snappedSize.height() / 2 - 16;
+                imageToolbarAnchor = std::clamp(static_cast<double>(top) / span, 0.0, 1.0);
+            }
+            placeImageToolbar();
+            return;
+        }
+        imageToolbarEdge = ToolbarSnapEdge::None;
+        imageToolbar->setOrientation(Qt::Horizontal);
+        const QSize freeSize = imageToolbar->size();
+        const int maxX = std::max(kFreeMargin, bounds.width() - freeSize.width() - kFreeMargin);
+        const int maxY = std::max(kFreeMargin, bounds.height() - freeSize.height() - kFreeMargin);
+        imageToolbarFreePos = QPoint(std::clamp(desired.x(), kFreeMargin, maxX),
+                                     std::clamp(desired.y(), kFreeMargin, maxY));
+        imageToolbar->move(imageToolbarFreePos);
+        imageToolbar->raise();
+    }
+    void finishImageToolbarDrag(const QPoint& globalPos) {
+        if (!draggingImageToolbar)
+            return;
+        updateImageToolbarDrag(globalPos);
+        draggingImageToolbar = false;
+        placeImageToolbar();
+        placeToolbar();
+    }
+    void placeImageToolbar() {
+        if (!imageToolbar || !canvas || canvas->rect().isEmpty())
+            return;
+        constexpr int kMargin = 16;
+        const QRect r = canvas->rect();
+        if (imageToolbarEdge == ToolbarSnapEdge::None) {
+            imageToolbar->setOrientation(Qt::Horizontal);
+            const QSize s = imageToolbar->size();
+            const int maxX = std::max(8, r.width() - s.width() - 8);
+            const int maxY = std::max(8, r.height() - s.height() - 8);
+            imageToolbarFreePos = QPoint(std::clamp(imageToolbarFreePos.x(), 8, maxX),
+                                         std::clamp(imageToolbarFreePos.y(), 8, maxY));
+            imageToolbar->move(imageToolbarFreePos);
+            imageToolbar->raise();
+            return;
+        }
+        const bool horizontal =
+            imageToolbarEdge == ToolbarSnapEdge::Top || imageToolbarEdge == ToolbarSnapEdge::Bottom;
+        imageToolbar->setOrientation(horizontal ? Qt::Horizontal : Qt::Vertical);
+        const QSize s = imageToolbar->size();
+        int x = r.left() + (r.width() - s.width()) / 2;
+        int y = r.top() + kMargin;
+        if (imageToolbarEdge == ToolbarSnapEdge::Top ||
+            imageToolbarEdge == ToolbarSnapEdge::Bottom) {
+            const int span = std::max(0, r.width() - s.width() - 2 * kMargin);
+            x = span > 0 ? r.left() + kMargin + qRound(span * imageToolbarAnchor)
+                         : r.left() + (r.width() - s.width()) / 2;
+            y = imageToolbarEdge == ToolbarSnapEdge::Top ? r.top() + kMargin
+                                                         : r.bottom() + 1 - kMargin - s.height();
+        } else {
+            const int span = std::max(0, r.height() - s.height() - 2 * kMargin);
+            x = imageToolbarEdge == ToolbarSnapEdge::Left ? r.left() + kMargin
+                                                          : r.right() + 1 - kMargin - s.width();
+            y = span > 0 ? r.top() + kMargin + qRound(span * imageToolbarAnchor)
+                         : r.top() + (r.height() - s.height()) / 2;
+        }
+        imageToolbar->move(x, y);
+        imageToolbar->raise();
+    }
+    void snapFloatingToolbarToEdge() {
+        if (!editorWindow || !floating || !host) {
+            rememberToolbarOffset();
+            return;
+        }
+        const QRect anchorSurface = (surface && !surface->size().isEmpty())
+                                        ? QRect(surface->mapToGlobal(QPoint(0, 0)), surface->size())
+                                        : editorWindow->frameGeometry();
+        const QRect mainRect =
+            host->mainToolbarContentRect().translated(floating->contentPosition());
+        if (mainRect.isEmpty() || anchorSurface.isEmpty()) {
+            rememberToolbarOffset();
+            return;
+        }
+        constexpr int kSnapThreshold = 44;
+        const int distTop = std::abs(mainRect.top() - anchorSurface.top());
+        const int distBottom = std::abs(anchorSurface.bottom() - mainRect.bottom());
+        const int distLeft = std::abs(mainRect.left() - anchorSurface.left());
+        const int distRight = std::abs(anchorSurface.right() - mainRect.right());
+        struct Candidate {
+            ToolbarSnapEdge edge;
+            int dist;
+        };
+        const std::array<Candidate, 4> candidates = {
+            Candidate{ToolbarSnapEdge::Top, distTop},
+            Candidate{ToolbarSnapEdge::Bottom, distBottom},
+            Candidate{ToolbarSnapEdge::Left, distLeft},
+            Candidate{ToolbarSnapEdge::Right, distRight},
+        };
+        const auto best = std::min_element(
+            candidates.cbegin(), candidates.cend(),
+            [](const Candidate& a, const Candidate& b) { return a.dist < b.dist; });
+        if (best != candidates.cend() && best->dist <= kSnapThreshold) {
+            floatingSnapEdge = best->edge;
+            if (best->edge == ToolbarSnapEdge::Top || best->edge == ToolbarSnapEdge::Bottom) {
+                const int span = std::max(1, anchorSurface.width() - mainRect.width() - 24);
+                floatingSnapAnchor = std::clamp(
+                    static_cast<double>(mainRect.left() - (anchorSurface.left() + 12)) / span, 0.0,
+                    1.0);
+            } else {
+                const int span = std::max(1, anchorSurface.height() - mainRect.height() - 24);
+                floatingSnapAnchor = std::clamp(
+                    static_cast<double>(mainRect.top() - (anchorSurface.top() + 12)) / span, 0.0,
+                    1.0);
+            }
+            placeToolbar();
+            return;
+        }
+        floatingSnapEdge = ToolbarSnapEdge::None;
+        rememberToolbarOffset();
+    }
     void endWindowInteraction() {
         if (!windowInteractionActive)
             return;
         windowInteractionActive = false;
-        // Match pin windows: settle at the default anchor after a move or resize.
-        manuallyPlaced = false;
+        // Preserve edge snaps across move/resize; only reset free-floating manual offset.
+        if (floatingSnapEdge == ToolbarSnapEdge::None) {
+            manuallyPlaced = false;
+        }
+        placeImageToolbar();
         placeToolbar();
     }
     void placeToolbar() {
@@ -1550,38 +2102,93 @@ struct ImageEditingWindow::Impl {
         const auto geometry = floating->placementSnapshot();
         if (!geometry.bottom.isValid())
             return;
-        if (manuallyPlaced) {
+        if (manuallyPlaced && floatingSnapEdge == ToolbarSnapEdge::None) {
             // Keep the user's main row fixed when secondary rows grow or change direction.
             const auto position =
                 frame.topLeft() + toolbarOffset - host->mainToolbarContentRect().topLeft();
             floating->moveContentTo(floating->constrainedContentPosition(position));
         } else {
-            // SnowView Rev0.2: default floating annotation toolbar above the filmstrip/metadata
-            // area at the bottom-center of the preview surface, keeping it draggable.
+            // Anchor relative to surface for Top, Bottom, Left, or Right edge snaps.
             const QRect anchorSurface =
                 (surface && !surface->size().isEmpty())
                     ? QRect(surface->mapToGlobal(QPoint(0, 0)), surface->size())
                     : frame;
             const auto& topLayout =
                 geometry.top.mainToolbarContentRect.isEmpty() ? geometry.bottom : geometry.top;
-            const auto& topMain = topLayout.mainToolbarContentRect;
-            const QRect topOccupied =
-                topLayout.occupiedContentRect.isEmpty() ? topMain : topLayout.occupiedContentRect;
-            constexpr int kSurfaceBottomInset = 12;
-            const QPoint topDesired(
-                anchorSurface.left() + (anchorSurface.width() - topMain.width()) / 2 -
-                    topMain.left(),
-                anchorSurface.bottom() - kSurfaceBottomInset - topMain.bottom());
-            const bool fitsTop = topOccupied.translated(topDesired).top() >= bounds.top();
-            const bool useAbove = fitsTop || geometry.bottom.mainToolbarContentRect.isEmpty();
+            const auto& bottomLayout =
+                geometry.bottom.mainToolbarContentRect.isEmpty() ? topLayout : geometry.bottom;
+            constexpr int kSurfaceInset = 12;
+            const ToolbarSnapEdge effectiveEdge = floatingSnapEdge == ToolbarSnapEdge::None
+                                                      ? ToolbarSnapEdge::Bottom
+                                                      : floatingSnapEdge;
+            bool preferAbove = effectiveEdge == ToolbarSnapEdge::Bottom;
+            if (effectiveEdge == ToolbarSnapEdge::Left || effectiveEdge == ToolbarSnapEdge::Right) {
+                preferAbove = floatingSnapAnchor >= 0.5;
+            }
+            const auto& probeLayout = preferAbove ? topLayout : bottomLayout;
+            const QRect probeMain = probeLayout.mainToolbarContentRect;
+            const QRect probeOccupied = probeLayout.occupiedContentRect.isEmpty()
+                                            ? probeMain
+                                            : probeLayout.occupiedContentRect;
+            int targetMainLeft =
+                anchorSurface.left() + (anchorSurface.width() - probeMain.width()) / 2;
+            int targetMainTop = anchorSurface.bottom() - kSurfaceInset - probeMain.height() + 1;
+            if (effectiveEdge == ToolbarSnapEdge::Top) {
+                const int span =
+                    std::max(0, anchorSurface.width() - probeMain.width() - 2 * kSurfaceInset);
+                targetMainLeft =
+                    span > 0
+                        ? anchorSurface.left() + kSurfaceInset + qRound(span * floatingSnapAnchor)
+                        : anchorSurface.left() + (anchorSurface.width() - probeMain.width()) / 2;
+                targetMainTop = anchorSurface.top() + kSurfaceInset;
+                if (imageToolbar && imageToolbar->isVisible() &&
+                    imageToolbarEdge == ToolbarSnapEdge::Top) {
+                    const int imageBarBottom =
+                        canvas->mapToGlobal(imageToolbar->geometry().bottomLeft()).y();
+                    targetMainTop = std::max(targetMainTop, imageBarBottom + 8);
+                }
+            } else if (effectiveEdge == ToolbarSnapEdge::Bottom) {
+                const int span =
+                    std::max(0, anchorSurface.width() - probeMain.width() - 2 * kSurfaceInset);
+                targetMainLeft =
+                    span > 0
+                        ? anchorSurface.left() + kSurfaceInset + qRound(span * floatingSnapAnchor)
+                        : anchorSurface.left() + (anchorSurface.width() - probeMain.width()) / 2;
+                targetMainTop = anchorSurface.bottom() + 1 - kSurfaceInset - probeMain.height();
+                if (imageToolbar && imageToolbar->isVisible() &&
+                    imageToolbarEdge == ToolbarSnapEdge::Bottom) {
+                    const int imageBarTop =
+                        canvas->mapToGlobal(imageToolbar->geometry().topLeft()).y();
+                    targetMainTop = std::min(targetMainTop, imageBarTop - 8 - probeMain.height());
+                }
+            } else if (effectiveEdge == ToolbarSnapEdge::Left) {
+                targetMainLeft = anchorSurface.left() + kSurfaceInset;
+                const int span =
+                    std::max(0, anchorSurface.height() - probeMain.height() - 2 * kSurfaceInset);
+                targetMainTop =
+                    span > 0
+                        ? anchorSurface.top() + kSurfaceInset + qRound(span * floatingSnapAnchor)
+                        : anchorSurface.top() + (anchorSurface.height() - probeMain.height()) / 2;
+            } else {
+                targetMainLeft = anchorSurface.right() + 1 - kSurfaceInset - probeMain.width();
+                const int span =
+                    std::max(0, anchorSurface.height() - probeMain.height() - 2 * kSurfaceInset);
+                targetMainTop =
+                    span > 0
+                        ? anchorSurface.top() + kSurfaceInset + qRound(span * floatingSnapAnchor)
+                        : anchorSurface.top() + (anchorSurface.height() - probeMain.height()) / 2;
+            }
+            const QPoint desiredPos = QPoint(targetMainLeft, targetMainTop) - probeMain.topLeft();
+            const QRect shiftedOccupied = probeOccupied.translated(desiredPos);
+            const bool useAbove = preferAbove ? (shiftedOccupied.top() >= bounds.top() ||
+                                                 geometry.bottom.mainToolbarContentRect.isEmpty())
+                                              : (shiftedOccupied.bottom() > bounds.bottom() &&
+                                                 !geometry.top.mainToolbarContentRect.isEmpty());
             floating->setStyleToolbarAboveMain(useAbove);
             floating->resetPhysicalSizeInvariant();
-            const auto& chosen = useAbove ? topLayout : geometry.bottom;
+            const auto& chosen = useAbove ? topLayout : bottomLayout;
             const auto& chosenMain = chosen.mainToolbarContentRect;
-            const QPoint basePos(
-                anchorSurface.left() + (anchorSurface.width() - chosenMain.width()) / 2 -
-                    chosenMain.left(),
-                anchorSurface.bottom() - kSurfaceBottomInset - chosenMain.bottom());
+            const QPoint basePos = QPoint(targetMainLeft, targetMainTop) - chosenMain.topLeft();
             floating->moveContentTo(floating->constrainedContentPosition(basePos));
         }
         floating->show();
@@ -1650,6 +2257,8 @@ struct ImageEditingWindow::Impl {
             return;
         if (adjustActive)
             exitAdjustMode(false);
+        if (filterActive)
+            exitFilterMode(false);
         if (mode != ImageEditingCanvas::Mode::CropRect && cropFlattenPending) {
             cropFlattenPending = false;
             cropFlattenSource = {};
@@ -1719,16 +2328,22 @@ struct ImageEditingWindow::Impl {
     void syncTaskPaneVisibility() {
         const bool showCrop = canvas->mode() == ImageEditingCanvas::Mode::CropRect;
         const bool showAdjust = adjustActive && !showCrop;
+        const bool showFilter = filterActive && !showCrop && !showAdjust;
         if (showCrop && taskStack && cropTaskPage)
             taskStack->setCurrentWidget(cropTaskPage);
         else if (showAdjust && taskStack && adjustTaskPage)
             taskStack->setCurrentWidget(adjustTaskPage);
+        else if (showFilter && taskStack && filterTaskPage)
+            taskStack->setCurrentWidget(filterTaskPage);
         if (taskPane) {
-            taskPane->setVisible(showCrop || showAdjust);
+            taskPane->setVisible(showCrop || showAdjust || showFilter);
             if (workArea && workArea->layout())
                 workArea->layout()->activate();
         }
-        QTimer::singleShot(0, &q, [this] { placeToolbar(); });
+        QTimer::singleShot(0, &q, [this] {
+            placeImageToolbar();
+            placeToolbar();
+        });
     }
     void syncCropUiState(bool active) {
         if (cropButton) {
@@ -2192,14 +2807,21 @@ struct ImageEditingWindow::Impl {
             return base.transformed(transform);
         });
     }
-    void grayscaleImage() {
-        runBaseTransform([](const QImage& base) {
-            return base.convertToFormat(QImage::Format_Grayscale8)
-                .convertToFormat(QImage::Format_ARGB32);
-        });
+    // SnowView Rev0.3 (1.6.5-0.3): color & lightness adjustments apply directly to baseImage
+    // beneath live annotations without flattening or showing a flatten modal.
+    void applyColorBaseTransform(const std::function<QImage(const QImage&)>& transform) {
+        if (document.image().isNull() || loading || cropBusy || closing)
+            return;
+        if (adjustActive)
+            exitAdjustMode(false);
+        if (filterActive)
+            exitFilterMode(false);
+        QImage next = transform(document.image());
+        if (!next.isNull())
+            document.applyBaseImage(std::move(next));
     }
     void autoEnhanceImage() {
-        runBaseTransform([](const QImage& base) { return snowViewAutoEnhancedImage(base); });
+        applyColorBaseTransform([](const QImage& base) { return snowViewAutoEnhancedImage(base); });
     }
     void syncAdjustButtonState() {
         if (!adjustButton)
@@ -2209,6 +2831,15 @@ struct ImageEditingWindow::Impl {
                                                   : AdButton::ButtonStyle::Text);
         adjustButton->setAccentRole(adjustActive ? AdButton::AccentRole::Primary
                                                  : AdButton::AccentRole::Neutral);
+    }
+    void syncFilterButtonState() {
+        if (!grayscaleButton)
+            return;
+        grayscaleButton->setChecked(filterActive);
+        grayscaleButton->setButtonStyle(filterActive ? AdButton::ButtonStyle::Solid
+                                                     : AdButton::ButtonStyle::Text);
+        grayscaleButton->setAccentRole(filterActive ? AdButton::AccentRole::Primary
+                                                    : AdButton::AccentRole::Neutral);
     }
     void resetAdjustSliders() {
         for (int i = 0; i < 4; ++i) {
@@ -2234,10 +2865,7 @@ struct ImageEditingWindow::Impl {
         const int s = adjustSliders[2] ? qRound(adjustSliders[2]->value()) : 0;
         const int sh = adjustSliders[3] ? qRound(adjustSliders[3]->value()) : 0;
         if (b == 0 && c == 0 && s == 0 && sh == 0) {
-            if (adjustFlattenPending && !adjustBaseImage.isNull())
-                document.setPreviewImage(adjustBaseImage);
-            else
-                document.clearPreviewImage();
+            document.clearPreviewImage();
             return;
         }
         document.setPreviewImage(snowViewAdjustedImage(adjustPreviewBase, b, c, s, sh));
@@ -2246,30 +2874,21 @@ struct ImageEditingWindow::Impl {
         if (!adjustActive)
             return;
         adjustPreviewTimer.stop();
-        const bool flatten = adjustFlattenPending;
         const QImage base = std::move(adjustBaseImage);
         const int b = adjustSliders[0] ? qRound(adjustSliders[0]->value()) : 0;
         const int c = adjustSliders[1] ? qRound(adjustSliders[1]->value()) : 0;
         const int s = adjustSliders[2] ? qRound(adjustSliders[2]->value()) : 0;
         const int sh = adjustSliders[3] ? qRound(adjustSliders[3]->value()) : 0;
         adjustActive = false;
-        adjustFlattenPending = false;
         adjustBaseImage = {};
         adjustPreviewBase = {};
         document.clearPreviewImage();
-        canvas->setCanvasContentVisible(true);
         syncAdjustButtonState();
         syncTaskPaneVisibility();
-        if (apply && !base.isNull() && (b != 0 || c != 0 || s != 0 || sh != 0 || flatten)) {
-            const QImage adjusted = (b == 0 && c == 0 && s == 0 && sh == 0)
-                                        ? base
-                                        : snowViewAdjustedImage(base, b, c, s, sh);
-            if (!adjusted.isNull()) {
-                if (flatten)
-                    document.applyFlattenedBaseImage(adjusted);
-                else
-                    document.applyBaseImage(adjusted);
-            }
+        if (apply && !base.isNull() && (b != 0 || c != 0 || s != 0 || sh != 0)) {
+            const QImage adjusted = snowViewAdjustedImage(base, b, c, s, sh);
+            if (!adjusted.isNull())
+                document.applyBaseImage(adjusted);
         }
         canvas->setFocus();
     }
@@ -2280,39 +2899,149 @@ struct ImageEditingWindow::Impl {
             exitAdjustMode(false);
             return;
         }
-        confirmAnnotationFlattenThen([this](bool flatten) {
-            const QImage base = flatten ? document.renderFlattenedBaseImage() : document.image();
-            if (base.isNull())
-                return;
-            if (canvas->mode() != ImageEditingCanvas::Mode::Pan)
-                drawing(ImageEditingCanvas::Mode::Pan);
-            if (session)
-                session->deactivate();
-            cancelColorSampling();
-            stack->setCurrentWidget(canvas);
-            adjustFlattenPending = flatten;
-            adjustBaseImage = base;
-            const int maxSide = std::max(base.width(), base.height());
-            adjustPreviewBase = maxSide > 1600 ? base.scaled(1600, 1600, Qt::KeepAspectRatio,
-                                                             Qt::SmoothTransformation)
-                                               : base;
-            adjustActive = true;
-            resetAdjustSliders();
-            syncAdjustButtonState();
-            syncTaskPaneVisibility();
-            if (flatten) {
-                document.setPreviewImage(base);
-                canvas->setCanvasContentVisible(false);
-            }
-            if (adjustSliders[0])
-                adjustSliders[0]->setFocus();
-        });
+        if (filterActive)
+            exitFilterMode(false);
+        const QImage base = document.image();
+        if (base.isNull())
+            return;
+        if (canvas->mode() == ImageEditingCanvas::Mode::CropRect ||
+            canvas->mode() == ImageEditingCanvas::Mode::CropRows ||
+            canvas->mode() == ImageEditingCanvas::Mode::CropColumns)
+            drawing(ImageEditingCanvas::Mode::Pan);
+        if (session)
+            session->deactivate();
+        cancelColorSampling();
+        stack->setCurrentWidget(canvas);
+        adjustBaseImage = base;
+        const int maxSide = std::max(base.width(), base.height());
+        adjustPreviewBase =
+            maxSide > 1600 ? base.scaled(1600, 1600, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+                           : base;
+        adjustActive = true;
+        resetAdjustSliders();
+        syncAdjustButtonState();
+        syncTaskPaneVisibility();
+        if (adjustSliders[0])
+            adjustSliders[0]->setFocus();
+    }
+    void refreshFilterThumbnails(const QImage& source) {
+        if (source.isNull())
+            return;
+        const QImage thumb =
+            source.scaled(108, 60, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+        for (std::size_t i = 0; i < filterButtons.size(); ++i) {
+            if (!filterButtons[i])
+                continue;
+            filterButtons[i]->setPreviewImage(
+                snowViewApplyColorFilter(thumb, static_cast<SnowViewColorFilterPreset>(i), 100));
+        }
+    }
+    void syncFilterCardsUi() {
+        for (std::size_t i = 0; i < filterButtons.size(); ++i) {
+            if (filterButtons[i])
+                filterButtons[i]->setChecked(
+                    filterActive && static_cast<SnowViewColorFilterPreset>(i) == filterPreset);
+        }
+    }
+    void selectFilterPreset(SnowViewColorFilterPreset preset) {
+        filterPreset = preset;
+        syncFilterCardsUi();
+        if (filterIntensitySlider && qRound(filterIntensitySlider->value()) == 0) {
+            const QSignalBlocker blocker(filterIntensitySlider);
+            filterIntensitySlider->setValue(100);
+            if (filterIntensityValueLabel)
+                filterIntensityValueLabel->setText(QStringLiteral("100%"));
+        }
+        applyFilterPreviewNow();
+    }
+    void resetFilterPane() {
+        filterPreset = SnowViewColorFilterPreset::Grayscale;
+        if (filterIntensitySlider) {
+            const QSignalBlocker blocker(filterIntensitySlider);
+            filterIntensitySlider->setValue(100);
+        }
+        if (filterIntensityValueLabel)
+            filterIntensityValueLabel->setText(QStringLiteral("100%"));
+        syncFilterCardsUi();
+        applyFilterPreviewNow();
+    }
+    void scheduleFilterPreview() {
+        if (!filterActive)
+            return;
+        filterPreviewTimer.start();
+    }
+    void applyFilterPreviewNow() {
+        if (!filterActive || filterPreviewBase.isNull())
+            return;
+        const int intensity = filterIntensitySlider ? qRound(filterIntensitySlider->value()) : 100;
+        if (intensity <= 0) {
+            document.clearPreviewImage();
+            return;
+        }
+        document.setPreviewImage(
+            snowViewApplyColorFilter(filterPreviewBase, filterPreset, intensity));
+    }
+    void exitFilterMode(bool apply) {
+        if (!filterActive)
+            return;
+        filterPreviewTimer.stop();
+        const QImage base = std::move(filterBaseImage);
+        const auto preset = filterPreset;
+        const int intensity = filterIntensitySlider ? qRound(filterIntensitySlider->value()) : 100;
+        filterActive = false;
+        filterBaseImage = {};
+        filterPreviewBase = {};
+        document.clearPreviewImage();
+        syncFilterCardsUi();
+        syncFilterButtonState();
+        syncTaskPaneVisibility();
+        if (apply && !base.isNull() && intensity > 0) {
+            const QImage filtered = snowViewApplyColorFilter(base, preset, intensity);
+            if (!filtered.isNull())
+                document.applyBaseImage(filtered);
+        }
+        canvas->setFocus();
+    }
+    void toggleFilterMode() {
+        if (loading || cropBusy || document.image().isNull())
+            return;
+        if (filterActive) {
+            exitFilterMode(false);
+            return;
+        }
+        if (adjustActive)
+            exitAdjustMode(false);
+        const QImage base = document.image();
+        if (base.isNull())
+            return;
+        if (canvas->mode() == ImageEditingCanvas::Mode::CropRect ||
+            canvas->mode() == ImageEditingCanvas::Mode::CropRows ||
+            canvas->mode() == ImageEditingCanvas::Mode::CropColumns)
+            drawing(ImageEditingCanvas::Mode::Pan);
+        if (session)
+            session->deactivate();
+        cancelColorSampling();
+        stack->setCurrentWidget(canvas);
+        filterBaseImage = base;
+        const int maxSide = std::max(base.width(), base.height());
+        filterPreviewBase =
+            maxSide > 1600 ? base.scaled(1600, 1600, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+                           : base;
+        refreshFilterThumbnails(filterPreviewBase);
+        filterActive = true;
+        resetFilterPane();
+        syncFilterButtonState();
+        syncTaskPaneVisibility();
+        if (filterButtons[0])
+            filterButtons[0]->setFocus();
     }
     void undo(bool redo) {
         if (cropBusy || loading)
             return;
         if (adjustActive)
             exitAdjustMode(false);
+        if (filterActive)
+            exitFilterMode(false);
         if (session && session->active()) {
             if (session->tableModeActive()) {
                 if (redo)
@@ -2425,6 +3154,10 @@ void ImageEditingWindow::Impl::syncRecognitionDisplay() {
         cropButton->setEnabled(!recognitionVisible);
     if (adjustButton)
         adjustButton->setEnabled(!recognitionVisible);
+    if (grayscaleButton)
+        grayscaleButton->setEnabled(!recognitionVisible);
+    if (autoEnhanceButton)
+        autoEnhanceButton->setEnabled(!recognitionVisible);
     fit->setEnabled(!recognitionVisible || showImage);
     actual->setEnabled(!recognitionVisible || showImage);
 }
@@ -3259,6 +3992,8 @@ void ImageEditingWindow::present(ImageEditingSource source) {
         return;
     if (d.adjustActive)
         d.exitAdjustMode(false);
+    if (d.filterActive)
+        d.exitFilterMode(false);
     if (d.cropFlattenPending) {
         d.cropFlattenPending = false;
         d.cropFlattenSource = {};
@@ -3495,6 +4230,8 @@ bool ImageEditingWindow::preparePendingEdits(bool requireCanvasCommit) {
     const QPointer<ImageEditingWindow> lifetime(this);
     if (m_impl->adjustActive)
         m_impl->exitAdjustMode(false);
+    if (m_impl->filterActive)
+        m_impl->exitFilterMode(false);
     if (m_impl->canvas->mode() == ImageEditingCanvas::Mode::CropRect)
         m_impl->drawing(ImageEditingCanvas::Mode::Pan);
     const bool canvasPrepared = m_impl->canvas->resetEditingStatePreservingTool();
@@ -3561,9 +4298,12 @@ void ImageEditingWindow::shutdown() {
     d.closing = true;
     d.adjustPreviewTimer.stop();
     d.adjustActive = false;
-    d.adjustFlattenPending = false;
     d.adjustBaseImage = {};
     d.adjustPreviewBase = {};
+    d.filterPreviewTimer.stop();
+    d.filterActive = false;
+    d.filterBaseImage = {};
+    d.filterPreviewBase = {};
     d.cropFlattenPending = false;
     d.cropFlattenSource = {};
     if (flattenConfirmation)
@@ -3631,9 +4371,15 @@ bool ImageEditingWindow::eventFilter(QObject* object, QEvent* event) {
         requestClose();
         return true;
     }
-    if (m_impl && object == m_impl->canvas && m_impl->colorEvent(event)) {
-        event->accept();
-        return true;
+    if (m_impl && object == m_impl->canvas) {
+        if (event->type() == QEvent::Resize) {
+            m_impl->placeImageToolbar();
+            m_impl->placeToolbar();
+        }
+        if (m_impl->colorEvent(event)) {
+            event->accept();
+            return true;
+        }
     }
     if (m_impl && object == m_impl->surface) {
         auto& d = *m_impl;
@@ -3666,6 +4412,7 @@ bool ImageEditingWindow::eventFilter(QObject* object, QEvent* event) {
         }
         if (event->type() == QEvent::Resize) {
             d.dropHint->setGeometry(d.surface->rect());
+            d.placeImageToolbar();
             d.placeToolbar();
         }
         if (event->type() == QEvent::LanguageChange)
@@ -3676,6 +4423,7 @@ bool ImageEditingWindow::eventFilter(QObject* object, QEvent* event) {
             QTimer::singleShot(0, this, [this] {
                 if (!m_impl->closing) {
                     m_impl->updateFilmstripMetrics();
+                    m_impl->placeImageToolbar();
                     m_impl->placeToolbar();
                 }
             });
@@ -3689,6 +4437,7 @@ bool ImageEditingWindow::eventFilter(QObject* object, QEvent* event) {
                    event->type() == QEvent::Show || event->type() == QEvent::WindowStateChange ||
                    event->type() == QEvent::ScreenChangeInternal ||
                    event->type() == QEvent::DevicePixelRatioChange) {
+            m_impl->placeImageToolbar();
             m_impl->placeToolbar();
         }
     }
